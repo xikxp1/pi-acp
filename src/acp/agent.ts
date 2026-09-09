@@ -35,6 +35,11 @@ import { SessionStore } from './session-store.js'
 import { FsBridge, fsBridgeEnv, type FsCapabilities } from './fs-bridge.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
 import { listPiSessions, findPiSession, forkPiSessionFile } from './pi-sessions.js'
+import {
+  additionalDirectoriesSystemPrompt,
+  normalizeAdditionalDirectories,
+  sameDirectories
+} from './additional-directories.js'
 import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi-messages.js'
 import { toolResultToText } from './translate/pi-tools.js'
 import { displayedCustomMessageText } from './translate/subagents.js'
@@ -194,7 +199,7 @@ export class PiAcpAgent implements ACPAgent {
 
   private async restoreSession(
     sessionId: string,
-    opts?: { cwd?: string; mcpServers?: LoadSessionRequest['mcpServers'] }
+    opts?: { cwd?: string; mcpServers?: LoadSessionRequest['mcpServers']; additionalDirectories?: string[] }
   ): Promise<PiAcpSession> {
     const existing = this.sessions.maybeGet(sessionId)
     if (existing) return existing
@@ -209,6 +214,8 @@ export class PiAcpAgent implements ACPAgent {
       }
 
       const cwd = opts?.cwd ?? stored.cwd
+      const additionalDirectories =
+        opts?.additionalDirectories ?? this.store.get(sessionId)?.additionalDirectories ?? []
 
       const bridge = await FsBridge.create(this.conn, () => sessionId, this.fsCapabilities)
       let proc: PiRpcProcess
@@ -218,6 +225,7 @@ export class PiAcpAgent implements ACPAgent {
           sessionPath: stored.sessionFile,
           piCommand: process.env.PI_ACP_PI_COMMAND,
           env: fsBridgeEnv(bridge),
+          appendSystemPrompt: additionalDirectoriesSystemPrompt(additionalDirectories),
           onDispose: () => bridge?.close()
         })
       } catch (e: any) {
@@ -232,6 +240,7 @@ export class PiAcpAgent implements ACPAgent {
       const session = this.sessions.getOrCreate(sessionId, {
         cwd,
         mcpServers: opts?.mcpServers ?? [],
+        additionalDirectories,
         conn: this.conn,
         proc,
         fileCommands,
@@ -239,7 +248,7 @@ export class PiAcpAgent implements ACPAgent {
       })
 
       this.lastSessionCwd = cwd
-      this.store.upsert({ sessionId, cwd, sessionFile: stored.sessionFile })
+      this.store.upsert({ sessionId, cwd, sessionFile: stored.sessionFile, additionalDirectories })
 
       return session
     })()
@@ -290,7 +299,8 @@ export class PiAcpAgent implements ACPAgent {
           delete: {},
           resume: {},
           close: {},
-          fork: {}
+          fork: {},
+          additionalDirectories: {}
         }
       }
     }
@@ -310,6 +320,7 @@ export class PiAcpAgent implements ACPAgent {
     const session = await this.sessions.create({
       cwd: params.cwd,
       mcpServers: params.mcpServers,
+      additionalDirectories: normalizeAdditionalDirectories(params.additionalDirectories, params.cwd),
       conn: this.conn,
       fileCommands,
       piCommand: process.env.PI_ACP_PI_COMMAND,
@@ -947,12 +958,16 @@ export class PiAcpAgent implements ACPAgent {
     const PAGE_SIZE = 50
     const page = filtered.slice(start, start + PAGE_SIZE)
 
-    const sessions: SessionInfo[] = page.map(s => ({
-      sessionId: s.sessionId,
-      cwd: s.cwd,
-      title: s.title,
-      updatedAt: s.updatedAt
-    }))
+    const sessions: SessionInfo[] = page.map(s => {
+      const additionalDirectories = this.store.get(s.sessionId)?.additionalDirectories
+      return {
+        sessionId: s.sessionId,
+        cwd: s.cwd,
+        title: s.title,
+        updatedAt: s.updatedAt,
+        ...(additionalDirectories?.length ? { additionalDirectories } : {})
+      }
+    })
 
     const nextCursor = start + PAGE_SIZE < filtered.length ? String(start + PAGE_SIZE) : null
 
@@ -979,7 +994,8 @@ export class PiAcpAgent implements ACPAgent {
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
     const session = await this.restoreSession(params.sessionId, {
       cwd: params.cwd,
-      mcpServers: params.mcpServers
+      mcpServers: params.mcpServers,
+      additionalDirectories: normalizeAdditionalDirectories(params.additionalDirectories, params.cwd)
     })
     const proc = session.proc
     const fileCommands = loadSlashCommands(params.cwd)
@@ -1206,14 +1222,28 @@ export class PiAcpAgent implements ACPAgent {
       throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`)
     }
 
+    const additionalDirectories = normalizeAdditionalDirectories(params.additionalDirectories, params.cwd)
+
+    // A running pi cannot change its system prompt; restart it if the roots differ.
+    const active = this.sessions.maybeGet(params.sessionId)
+    if (active && !sameDirectories(active.additionalDirectories, additionalDirectories)) {
+      this.sessions.close(params.sessionId)
+    }
+
     const session =
       this.sessions.maybeGet(params.sessionId) ??
       (await this.restoreSession(params.sessionId, {
         cwd: params.cwd,
-        mcpServers: params.mcpServers
+        mcpServers: params.mcpServers,
+        additionalDirectories
       }))
     this.lastSessionCwd = params.cwd
-    this.store.upsert({ sessionId: params.sessionId, cwd: params.cwd, sessionFile: stored.sessionFile })
+    this.store.upsert({
+      sessionId: params.sessionId,
+      cwd: params.cwd,
+      sessionFile: stored.sessionFile,
+      additionalDirectories
+    })
 
     const piSession = findPiSession(params.sessionId)
     if (piSession?.title) {
@@ -1252,12 +1282,19 @@ export class PiAcpAgent implements ACPAgent {
       throw RequestError.internalError({ sessionFile: stored.sessionFile }, String(e?.message ?? e))
     }
 
-    this.store.upsert({ sessionId: forked.sessionId, cwd: params.cwd, sessionFile: forked.sessionFile })
+    const additionalDirectories = normalizeAdditionalDirectories(params.additionalDirectories, params.cwd)
+    this.store.upsert({
+      sessionId: forked.sessionId,
+      cwd: params.cwd,
+      sessionFile: forked.sessionFile,
+      additionalDirectories
+    })
     this.lastSessionCwd = params.cwd
 
     const session = await this.restoreSession(forked.sessionId, {
       cwd: params.cwd,
-      mcpServers: params.mcpServers
+      mcpServers: params.mcpServers,
+      additionalDirectories
     })
 
     const sourceTitle = findPiSession(params.sessionId)?.title

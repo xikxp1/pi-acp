@@ -31,6 +31,7 @@ import { toolResultToText } from './translate/pi-tools.js'
 import { displayedCustomMessageText, isSubagentTool, subagentResultText, SubagentCards } from './translate/subagents.js'
 import { toToolKind, toToolTitle } from './translate/tool-presentation.js'
 import { getParsedEdits, getToolPath, toToolCallLocations } from './translate/tool-args.js'
+import { additionalDirectoriesSystemPrompt } from './additional-directories.js'
 import { todoDetailsToPlan } from './translate/plan.js'
 import {
   contextWindowFromState,
@@ -42,6 +43,7 @@ import {
 type SessionCreateParams = {
   cwd: string
   mcpServers: McpServer[]
+  additionalDirectories?: string[]
   conn: AgentSideConnection
   fileCommands?: import('./slash-commands.js').FileSlashCommand[]
   piCommand?: string
@@ -188,6 +190,7 @@ export class SessionManager {
         cwd: params.cwd,
         piCommand: params.piCommand,
         env: fsBridgeEnv(bridge),
+        appendSystemPrompt: additionalDirectoriesSystemPrompt(params.additionalDirectories ?? []),
         onDispose: () => bridge?.close()
       })
     } catch (e) {
@@ -209,13 +212,19 @@ export class SessionManager {
     const sessionFile = typeof state?.sessionFile === 'string' ? state.sessionFile : null
 
     if (sessionFile) {
-      this.store.upsert({ sessionId, cwd: params.cwd, sessionFile })
+      this.store.upsert({
+        sessionId,
+        cwd: params.cwd,
+        sessionFile,
+        additionalDirectories: params.additionalDirectories ?? []
+      })
     }
 
     const session = new PiAcpSession({
       sessionId,
       cwd: params.cwd,
       mcpServers: params.mcpServers,
+      additionalDirectories: params.additionalDirectories,
       proc,
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
@@ -244,6 +253,7 @@ export class SessionManager {
       sessionId,
       cwd: params.cwd,
       mcpServers: params.mcpServers,
+      additionalDirectories: params.additionalDirectories,
       proc: params.proc,
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
@@ -259,6 +269,7 @@ export class PiAcpSession {
   readonly sessionId: string
   readonly cwd: string
   readonly mcpServers: McpServer[]
+  readonly additionalDirectories: string[]
 
   private contextWindow: number | undefined
   private lastUsageUsed: number | undefined
@@ -319,6 +330,7 @@ export class PiAcpSession {
     sessionId: string
     cwd: string
     mcpServers: McpServer[]
+    additionalDirectories?: string[]
     proc: PiRpcProcess
     conn: AgentSideConnection
     fileCommands?: FileSlashCommand[]
@@ -327,6 +339,7 @@ export class PiAcpSession {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
     this.mcpServers = opts.mcpServers
+    this.additionalDirectories = opts.additionalDirectories ?? []
     this.proc = opts.proc
     this.conn = opts.conn
     this.fileCommands = opts.fileCommands ?? []

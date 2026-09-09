@@ -90,6 +90,7 @@ test('PiAcpAgent: prompt auto-restores a missing session from SessionStore', asy
         sessionPath: '/tmp/store-project/session.jsonl',
         piCommand: process.env.PI_ACP_PI_COMMAND,
         env: { PI_ACP_FS_SOCKET: undefined, PI_ACP_FS_CAPS: undefined },
+        appendSystemPrompt: undefined,
         onDispose: spawnCalls[0].onDispose
       }
     ])
@@ -98,7 +99,8 @@ test('PiAcpAgent: prompt auto-restores a missing session from SessionStore', asy
       {
         sessionId: 'stored-session',
         cwd: '/tmp/store-project',
-        sessionFile: '/tmp/store-project/session.jsonl'
+        sessionFile: '/tmp/store-project/session.jsonl',
+        additionalDirectories: []
       }
     ])
   } finally {
@@ -186,6 +188,7 @@ test('PiAcpAgent: setSessionConfigOption auto-restores via pi session discovery 
         sessionPath: sessionFile,
         piCommand: process.env.PI_ACP_PI_COMMAND,
         env: { PI_ACP_FS_SOCKET: undefined, PI_ACP_FS_CAPS: undefined },
+        appendSystemPrompt: undefined,
         onDispose: spawnCalls[0].onDispose
       }
     ])
@@ -200,7 +203,8 @@ test('PiAcpAgent: setSessionConfigOption auto-restores via pi session discovery 
       {
         sessionId: 'fallback-session',
         cwd: '/tmp/fallback-project',
-        sessionFile
+        sessionFile,
+        additionalDirectories: []
       }
     ])
     assert.deepEqual(conn.updates, [

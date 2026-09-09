@@ -7,6 +7,7 @@ export type StoredSession = {
   cwd: string
   sessionFile: string
   updatedAt: string
+  additionalDirectories?: string[]
 }
 
 type SessionMapFile = {
@@ -48,13 +49,16 @@ export class SessionStore {
     return db.sessions[sessionId] ?? null
   }
 
-  upsert(entry: { sessionId: string; cwd: string; sessionFile: string }): void {
+  upsert(entry: { sessionId: string; cwd: string; sessionFile: string; additionalDirectories?: string[] }): void {
     const db = loadFile(this.path)
+    // Callers that omit additionalDirectories keep whatever was stored before.
+    const additionalDirectories = entry.additionalDirectories ?? db.sessions[entry.sessionId]?.additionalDirectories
     db.sessions[entry.sessionId] = {
       sessionId: entry.sessionId,
       cwd: entry.cwd,
       sessionFile: entry.sessionFile,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      ...(additionalDirectories?.length ? { additionalDirectories } : {})
     }
     saveFile(this.path, db)
   }

@@ -76,6 +76,8 @@ type SpawnParams = {
   piCommand?: string
   /** If set, pi will persist the session to this exact file (via `--session <path>`). */
   sessionPath?: string
+  /** Extra text appended to pi's system prompt (via `--append-system-prompt`). */
+  appendSystemPrompt?: string
 }
 
 export class PiRpcProcess {
@@ -144,6 +146,7 @@ export class PiRpcProcess {
     // (e.g. MCP extensions, prompt templates for workflows).
     const args = ['--mode', 'rpc', '--no-themes']
     if (params.sessionPath) args.push('--session', params.sessionPath)
+    if (params.appendSystemPrompt) args.push('--append-system-prompt', params.appendSystemPrompt)
 
     const child = spawn(cmd, args, {
       cwd: params.cwd,

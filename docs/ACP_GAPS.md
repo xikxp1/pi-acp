@@ -27,13 +27,13 @@ extension `confirm`/`select` UI requests.
 | 3   | `promptCapabilities.embeddedContext`                  | Stable                          | Opt-in via env (by design)          | Enable `PI_ACP_ENABLE_EMBEDDED_CONTEXT=true` for @-mentions | Not a gap                  |
 | 4   | Client FS (`fs/read_text_file`, `fs/write_text_file`) | Stable                          | Supported via companion `pi-acp-fs` | Unsaved buffers visible to overridden file tools            | Implemented                |
 | 5   | `plan` / `plan_update` updates                        | Stable                          | Supported via companion `todo`      | Plan panel for successful `todo` results                    | Implemented                |
-| 6   | `session/resume`                                      | Stabilized (2026-04)            | Implemented (no history replay)     | Medium — faster reconnects                                  | Medium                     |
+| 6   | `session/resume`                                      | Stabilized (2026-04)            | Implemented                         | Fast reconnects without replay (per spec)                   | Implemented                |
 | 7   | `session/close`                                       | Stabilized (2026-04)            | Implemented                         | Explicit per-session resource cleanup                       | Implemented                |
 | 8   | `session/fork`                                        | Unstable                        | Implemented (file copy)             | Checkpoint/branch flows in clients that support fork        | Implemented                |
 | 9   | Client terminals (`terminal/*`)                       | Stable                          | Emulated via vendor `_meta` only    | Low-medium — display works, no client-side control          | Hard (needs pi delegation) |
 | 10  | StopReason fidelity                                   | Stable                          | Implemented                         | Failed turns surface as errors; `length` → `max_tokens`     | Implemented                |
 | 11  | MCP servers                                           | Stable (+ unstable `acp` proxy) | Accepted, ignored                   | Medium — Zed-configured MCP servers silently dropped        | Hard (pi has no MCP)       |
-| 12  | `additionalDirectories`                               | Stable                          | Ignored                             | Medium — multi-root worktrees not exposed                   | Easy-medium                |
+| 12  | `additionalDirectories`                               | Stable                          | Implemented (system prompt)         | Multi-root worktrees visible to pi as extra roots           | Implemented                |
 | 13  | `session/load` replay fidelity                        | Stable                          | Implemented                         | Titles, locations, diffs, thinking, images replayed         | Implemented                |
 | 14  | Elicitation (`elicitation/create`)                    | Unstable                        | Implemented (form mode)             | pi `input`/`editor` UI requests render as forms             | Implemented                |
 | 15  | ACP v2 / `auth/login`                                 | Emerging                        | v1 only, terminal-login out-of-band | Low today                                                   | Track                      |
@@ -102,8 +102,14 @@ emit plans. Empty lists clear the plan. pi core alone has no plan/todo tool.
 ### 6–8. Session lifecycle: `resume`, `close`, `fork`
 
 - **`session/resume`** (stabilized 2026-04, `sessionCapabilities.resume`): reconnect
-  without history replay. Implemented: reuses active pi processes or restores stored
-  sessions, returning configuration and advertising the stored title and commands.
+  without history replay. Complete per spec: the agent MUST NOT replay history on
+  resume, and the response MAY carry config/mode state. The adapter reuses an active pi
+  process or restores the stored session file, returns config options/models/modes,
+  re-announces the stored title via `session_info_update`, and advertises slash
+  commands. SDK 0.26 has no `replayFrom`; when ACP v2 folds `session/load` into
+  `session/resume` (see #15), that is the piece to add. Possible polish, not a gap:
+  emit `usage_update` right after resume so Zed's context indicator is populated before
+  the next turn.
 - **`session/close`** (stabilized 2026-04, `sessionCapabilities.close`): free a session's
   resources explicitly. Implemented: best-effort cancellation followed by process
   disposal. Idempotent; session files and mappings remain available for load/resume.
@@ -115,7 +121,7 @@ emit plans. Empty lists clear the plan. pi core alone has no plan/todo tool.
   running) is untouched, so forking works mid-turn. The response carries the new
   `sessionId`, config options/modes, and `_meta.piAcp.forkedFrom`; the source title is
   re-announced via `session_info_update`. The SDK method is still `unstable_`; revisit
-  when it stabilizes. `additionalDirectories` on the request is ignored (see #12).
+  when it stabilizes. `additionalDirectories` on the request is honored (see #12).
 
 ### 9. Real client terminals
 
@@ -146,13 +152,21 @@ the limitation prominently, or build an MCP→pi-tool bridge extension (large ef
 SDK also has an unstable client-proxied MCP transport (`mcpCapabilities.acp`,
 `mcp/connect`) which doesn't change pi's side of the problem.
 
-### 12. `additionalDirectories`
+### 12. `additionalDirectories` — RESOLVED (system prompt)
 
-`NewSessionRequest` / `LoadSessionRequest` / `SessionInfo` carry
-`additionalDirectories` for multi-root workspaces (`sessionCapabilities.additionalDirectories`).
-The adapter ignores the field, so in multi-worktree Zed projects pi only sees `cwd`.
-Cheap partial fix: inject the extra roots into the prompt/system context; proper fix
-depends on pi understanding multiple roots.
+The adapter advertises `sessionCapabilities.additionalDirectories` and accepts the field
+on `session/new`, `session/load`, `session/resume`, and `session/fork`
+(`src/acp/additional-directories.ts`). Entries are validated as absolute paths, deduped,
+and `cwd` itself is dropped. pi is single-root, so the roots are injected via
+`pi --append-system-prompt` at spawn time as a short "additional workspace roots" note
+listing the absolute paths. The list is persisted in the pi-acp session store and
+reported back in `session/list` `SessionInfo.additionalDirectories`.
+
+Per spec, each request's list is authoritative (omitting it means no roots). A running
+pi cannot change its system prompt, so a warm `session/resume` whose list differs from
+the active session restarts the pi process; identical lists reuse it. pi's own tools
+still resolve relative paths against `cwd` only - the model is told to use absolute
+paths for the extra roots.
 
 ### 13. `session/load` replay fidelity — RESOLVED
 
@@ -216,6 +230,5 @@ them for external agents.
 
 ## Suggested priority order
 
-1. `additionalDirectories` (inject extra roots into prompt/system context).
-2. Permission gating & terminal delegation - start upstream conversations with pi;
+1. Permission gating & terminal delegation - start upstream conversations with pi;
    these are the biggest UX gaps but need pi-side hooks.
