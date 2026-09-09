@@ -54,7 +54,32 @@ type SessionCreateParams = {
   clientSupportsFormElicitation?: boolean
 }
 
-export type StopReason = 'end_turn' | 'cancelled' | 'error'
+export type StopReason = 'end_turn' | 'cancelled' | 'max_tokens'
+
+/** A pi turn failed hard (provider error, retry exhaustion, subprocess failure). */
+export class PiTurnError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'PiTurnError'
+  }
+}
+
+type TurnOutcome = { stopReason?: string; errorMessage?: string }
+
+function assistantOutcome(message: unknown): TurnOutcome | undefined {
+  if (!message || typeof message !== 'object') return undefined
+  const m = message as { role?: unknown; stopReason?: unknown; errorMessage?: unknown }
+  if (m.role !== 'assistant') return undefined
+  return {
+    stopReason: typeof m.stopReason === 'string' ? m.stopReason : undefined,
+    errorMessage: typeof m.errorMessage === 'string' ? m.errorMessage : undefined
+  }
+}
+
+function errorMessageOf(err: unknown): string {
+  if (err instanceof Error) return err.message
+  return String(err ?? 'unknown error')
+}
 
 type PendingTurn = {
   onUsage?: (usage: Usage) => void
@@ -291,6 +316,9 @@ export class PiAcpSession {
   private lastUsageUsed: number | undefined
   private lastUsageAt = -Infinity
   private settling = false
+  // Final stop reason / error of the last assistant message in the current turn.
+  private turnOutcome: TurnOutcome = {}
+  private retryFailure: string | undefined
 
   private startupInfo: string | null = null
   private startupInfoSent = false
@@ -378,7 +406,8 @@ export class PiAcpSession {
     const authError = maybeAuthRequiredError(error)
     for (const turn of turns) {
       if (authError) turn.reject(authError)
-      else turn.resolve(this.cancelRequested ? 'cancelled' : 'error')
+      else if (this.cancelRequested) turn.resolve('cancelled')
+      else turn.reject(new PiTurnError(errorMessageOf(error)))
     }
     this.emit({
       sessionUpdate: 'session_info_update',
@@ -448,7 +477,8 @@ export class PiAcpSession {
     if (this.terminalError) {
       const authError = maybeAuthRequiredError(this.terminalError)
       if (authError) throw authError
-      return this.cancelRequested ? 'cancelled' : 'error'
+      if (this.cancelRequested) return 'cancelled'
+      throw new PiTurnError(errorMessageOf(this.terminalError))
     }
     // pi RPC mode disables slash command expansion, so we do it here.
     const expandedMessage = expandSlashCommand(message, this.fileCommands)
@@ -624,6 +654,8 @@ export class PiAcpSession {
     this.lastUsageUsed = undefined
     this.lastUsageAt = -Infinity
     this.settling = false
+    this.turnOutcome = {}
+    this.retryFailure = undefined
     const turn = (this.pendingTurn = { resolve: t.resolve, reject: t.reject, onUsage: t.onUsage })
 
     // Publish queue depth (0 because we're starting the turn now).
@@ -646,6 +678,24 @@ export class PiAcpSession {
     })
   }
 
+  private turnFailure(): string | undefined {
+    if (this.retryFailure) return this.retryFailure
+    if (this.turnOutcome.stopReason === 'error') return this.turnOutcome.errorMessage || 'pi reported an error'
+    return undefined
+  }
+
+  private resolvedStopReason(): StopReason {
+    if (this.cancelRequested) return 'cancelled'
+    switch (this.turnOutcome.stopReason) {
+      case 'length':
+        return 'max_tokens'
+      case 'aborted':
+        return 'cancelled'
+      default:
+        return 'end_turn'
+    }
+  }
+
   private handlePiEvent(ev: PiRpcEvent) {
     if (this.terminalError) return
     const type = String((ev as any).type ?? '')
@@ -662,6 +712,8 @@ export class PiAcpSession {
 
     switch (type) {
       case 'message_end': {
+        const outcome = assistantOutcome(ev.message)
+        if (outcome) this.turnOutcome = outcome
         const text = displayedCustomMessageText(ev.message)
         if (text) this.emit({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
         break
@@ -956,6 +1008,9 @@ export class PiAcpSession {
       }
 
       case 'auto_retry_end': {
+        const success = (ev as { success?: unknown }).success
+        const finalError = (ev as { finalError?: unknown }).finalError
+        if (success === false) this.retryFailure = typeof finalError === 'string' ? finalError : 'retries exhausted'
         this.emit({
           sessionUpdate: 'agent_message_chunk',
           content: { type: 'text', text: 'Retry finished, resuming.' } satisfies ContentBlock
@@ -1013,8 +1068,9 @@ export class PiAcpSession {
             if (usage) turn.onUsage?.(usage)
             await this.flushEmits()
             if (this.terminalError || this.pendingTurn !== turn) return
-            const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
-            turn.resolve(reason)
+            const failure = this.cancelRequested ? undefined : this.turnFailure()
+            if (failure) turn.reject(new PiTurnError(failure))
+            else turn.resolve(this.resolvedStopReason())
             this.pendingTurn = null
             this.inAgentLoop = false
 

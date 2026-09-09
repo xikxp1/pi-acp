@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { PassThrough } from 'node:stream'
 import { PiRpcProcess } from '../../src/pi-rpc/process.js'
+import { PiTurnError, type StopReason } from '../../src/acp/session.js'
 
 export type RpcCommand = { id: string; type: string; message?: string }
 
@@ -83,6 +84,14 @@ export async function bounded<T>(promise: Promise<T>): Promise<T> {
   } finally {
     clearTimeout(timer)
   }
+}
+
+/** Resolves a prompt to its stop reason, or 'error' when it rejects with PiTurnError. */
+export function outcome(promise: Promise<StopReason>): Promise<StopReason | 'error'> {
+  return promise.catch(err => {
+    if (err instanceof PiTurnError) return 'error' as const
+    throw err
+  })
 }
 
 export const nextTick = () => new Promise<void>(resolve => setImmediate(resolve))

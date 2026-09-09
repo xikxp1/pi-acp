@@ -31,7 +31,7 @@ extension `confirm`/`select` UI requests.
 | 7   | `session/close`                                       | Stabilized (2026-04)            | Implemented                         | Explicit per-session resource cleanup                      | Implemented                    |
 | 8   | `session/fork`                                        | Unstable                        | Missing                             | Medium — no checkpoint/edit-message flows                  | Medium (pi supports branching) |
 | 9   | Client terminals (`terminal/*`)                       | Stable                          | Emulated via vendor `_meta` only    | Low-medium — display works, no client-side control         | Hard (needs pi delegation)     |
-| 10  | StopReason fidelity                                   | Stable                          | Errors mapped to `end_turn`         | Medium — Zed can't distinguish failures                    | Easy                           |
+| 10  | StopReason fidelity                                   | Stable                          | Implemented                         | Failed turns surface as errors; `length` → `max_tokens`    | Implemented                    |
 | 11  | MCP servers                                           | Stable (+ unstable `acp` proxy) | Accepted, ignored                   | Medium — Zed-configured MCP servers silently dropped       | Hard (pi has no MCP)           |
 | 12  | `additionalDirectories`                               | Stable                          | Ignored                             | Medium — multi-root worktrees not exposed                  | Easy-medium                    |
 | 13  | `session/load` replay fidelity                        | Stable                          | Lossy                               | Medium — degraded history rendering                        | Medium                         |
@@ -132,13 +132,15 @@ gap, actually executing through client terminals requires pi to delegate `bash`
 execution. Low urgency (the emulation is good), but the `_meta` contract could break
 with any Zed release; worth tracking.
 
-### 10. StopReason fidelity
+### 10. StopReason fidelity — RESOLVED
 
-`src/acp/agent.ts:prompt()` maps pi errors to `end_turn` unless a cancel was requested.
-ACP defines `max_tokens`, `max_turn_requests`, and `refusal`. At minimum, context-limit
-failures from pi could map to `max_tokens`, and hard errors should surface as JSON-RPC
-errors rather than a silent `end_turn` (today Zed shows a turn that just... stops).
-Auto-retry exhaustion is currently reported only as chat text.
+The adapter tracks the last assistant `message_end` `stopReason`/`errorMessage` and
+`auto_retry_end` failures per turn (src/acp/session.ts). On `agent_settled`:
+`length` → `max_tokens`, `aborted` or a requested cancel → `cancelled`, `error` or retry
+exhaustion → the turn rejects with `PiTurnError`, which `prompt()` in src/acp/agent.ts
+converts to a JSON-RPC internal error carrying pi's message. Subprocess failures take the
+same path. Zed marks the turn as failed and offers retry instead of silently stopping.
+`max_turn_requests` and `refusal` have no pi equivalent yet.
 
 ### 11. MCP servers
 
@@ -218,9 +220,8 @@ them for external agents.
 
 1. Emit `usage_update` + `PromptResponse.usage` (small, stable, visible in Zed).
 2. Enable `embeddedContext` by default (opt-out via env).
-3. StopReason/error fidelity (`max_tokens`, surface hard errors).
-4. `session/load` replay fidelity (titles, locations, diffs from `get_messages`).
-5. Tool kind/title polish.
-6. `session/fork` on top of pi branching.
-7. Permission gating & terminal delegation - start upstream conversations with pi;
+3. `session/load` replay fidelity (titles, locations, diffs from `get_messages`).
+4. Tool kind/title polish.
+5. `session/fork` on top of pi branching.
+6. Permission gating & terminal delegation - start upstream conversations with pi;
    these are the biggest UX gaps but need pi-side hooks.

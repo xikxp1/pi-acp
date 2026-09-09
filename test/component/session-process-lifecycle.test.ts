@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { PiAcpSession, SessionManager } from '../../src/acp/session.js'
 import { FakeAgentSideConnection, asAgentConn } from '../helpers/fakes.js'
-import { bounded, createRpcChild, nextTick } from '../helpers/rpc-child.js'
+import { bounded, createRpcChild, nextTick, outcome } from '../helpers/rpc-child.js'
 
 for (const failure of ['exit', 'dispose', 'manager close', 'stdin close', 'child error'] as const) {
   test(`PiAcpSession: accepted and queued prompts settle after ${failure}`, async t => {
@@ -15,9 +15,9 @@ for (const failure of ['exit', 'dispose', 'manager close', 'stdin close', 'child
       proc: rpc.proc,
       conn: asAgentConn(new FakeAgentSideConnection())
     })
-    const first = session.prompt('one')
-    const second = session.prompt('two')
-    const third = session.prompt('three')
+    const first = outcome(session.prompt('one'))
+    const second = outcome(session.prompt('two'))
+    const third = outcome(session.prompt('three'))
     await nextTick()
     assert.deepEqual(
       rpc.commands.filter(c => c.type === 'prompt').map(c => c.message),
@@ -30,7 +30,7 @@ for (const failure of ['exit', 'dispose', 'manager close', 'stdin close', 'child
     else rpc.child.emit('error', new Error('child failed'))
 
     assert.deepEqual(await bounded(Promise.all([first, second, third])), ['error', 'error', 'error'])
-    assert.equal(await bounded(session.prompt('after termination')), 'error')
+    assert.equal(await bounded(outcome(session.prompt('after termination'))), 'error')
     assert.deepEqual(
       rpc.commands.filter(c => c.type === 'prompt').map(c => c.message),
       ['one']
@@ -69,11 +69,11 @@ for (const phase of ['accepted', 'awaiting acknowledgement', 'settling'] as cons
       conn: asAgentConn(conn)
     })
     const settled: string[] = []
-    const first = session.prompt('one').then(reason => {
+    const first = outcome(session.prompt('one')).then(reason => {
       settled.push(reason)
       return reason
     })
-    const second = session.prompt('two').then(reason => {
+    const second = outcome(session.prompt('two')).then(reason => {
       settled.push(reason)
       return reason
     })
@@ -131,11 +131,11 @@ test('PiAcpSession: exit before prompt acknowledgement settles the active and qu
     proc: rpc.proc,
     conn: asAgentConn(new FakeAgentSideConnection())
   })
-  const first = session.prompt('one')
-  const second = session.prompt('two')
+  const first = outcome(session.prompt('one'))
+  const second = outcome(session.prompt('two'))
   rpc.child.emit('exit', 1, null)
   assert.deepEqual(await bounded(Promise.all([first, second])), ['error', 'error'])
-  assert.equal(await bounded(session.prompt('later')), 'error')
+  assert.equal(await bounded(outcome(session.prompt('later'))), 'error')
 })
 
 test('PiAcpSession: acknowledged turns wait for agent_settled and then advance the queue', async t => {

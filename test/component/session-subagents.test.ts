@@ -5,7 +5,7 @@ import type { PiRpcProcess } from '../../src/pi-rpc/process.js'
 import { SubagentCards } from '../../src/acp/translate/subagents.js'
 import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpers/fakes.js'
 
-import { bounded, nextTick } from '../helpers/rpc-child.js'
+import { bounded, nextTick, outcome } from '../helpers/rpc-child.js'
 
 const tick = () => bounded(nextTick())
 function setup() {
@@ -117,7 +117,7 @@ test('prompt rejection preserves background cards until terminal disposal', asyn
   proc.prompt = async () => {
     throw new Error('prompt rejected')
   }
-  assert.equal(await bounded(session.prompt('rejected')), 'error')
+  assert.equal(await bounded(outcome(session.prompt('rejected'))), 'error')
   send(proc, snapshot('background', 'still running'))
   await tick()
   const cards = () => conn.updates.map(u => u.update).filter(u => 'toolCallId' in u)

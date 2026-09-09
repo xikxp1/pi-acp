@@ -28,7 +28,7 @@ import {
   type DeleteSessionResponse
 } from '@agentclientprotocol/sdk'
 import { getAuthMethods } from './auth.js'
-import { SessionManager, type PiAcpSession } from './session.js'
+import { PiTurnError, SessionManager, type PiAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
 import { FsBridge, fsBridgeEnv, type FsCapabilities } from './fs-bridge.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
@@ -900,17 +900,20 @@ export class PiAcpAgent implements ACPAgent {
 
     await session.refreshContextWindow()
     let usage: PromptResponse['usage']
-    const result = await session.prompt(message, images, value => {
-      usage = value
-    })
+    let stopReason: StopReason
+    try {
+      stopReason = await session.prompt(message, images, value => {
+        usage = value
+      })
+    } catch (err) {
+      // ACP has no "error" stop reason; surface hard pi failures as JSON-RPC errors
+      // so clients mark the turn as failed instead of silently ending it.
+      if (err instanceof PiTurnError) throw RequestError.internalError({ reason: err.message }, err.message)
+      throw err
+    }
 
     // Extensions may have named the session during the turn (pi emits no event for it).
     await session.syncSessionName()
-
-    // ACP StopReason does not include "error"; if pi fails we map to end_turn for now,
-    // unless we know this was a cancellation.
-    const stopReason: StopReason =
-      result === 'error' ? (session.wasCancelRequested() ? 'cancelled' : 'end_turn') : result
 
     return { stopReason, ...(usage ? { usage } : {}) }
   }
