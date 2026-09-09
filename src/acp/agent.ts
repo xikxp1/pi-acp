@@ -4,6 +4,10 @@ import {
   type AgentSideConnection,
   type AuthenticateRequest,
   type CancelNotification,
+  type CloseSessionRequest,
+  type CloseSessionResponse,
+  type ResumeSessionRequest,
+  type ResumeSessionResponse,
   type InitializeRequest,
   type InitializeResponse,
   type ListSessionsRequest,
@@ -276,10 +280,11 @@ export class PiAcpAgent implements ACPAgent {
           embeddedContext: process.env.PI_ACP_ENABLE_EMBEDDED_CONTEXT === 'true'
         },
         sessionCapabilities: {
-          // **UNSTABLE** ACP capability used by Zed's codex-acp adapter.
-          // Enables a native session picker in clients that support it.
+          // List/delete are unstable; resume/close are stable lifecycle capabilities.
           list: {},
-          delete: {}
+          delete: {},
+          resume: {},
+          close: {}
         }
       }
     }
@@ -1109,11 +1114,21 @@ export class PiAcpAgent implements ACPAgent {
       }
     }
 
+    this.deferAvailableCommands(session, enableSkillCommands, fileCommands)
+
+    return response
+  }
+
+  private deferAvailableCommands(
+    session: PiAcpSession,
+    enableSkillCommands: boolean,
+    fileCommands: ReturnType<typeof loadSlashCommands>
+  ): void {
     // Advertise slash commands after the response so the client knows the session exists.
     setTimeout(() => {
       void (async () => {
         try {
-          const pi = (await proc.getCommands()) as any
+          const pi = await session.proc.getCommands()
           const { commands } = toAvailableCommandsFromPiGetCommands(pi, {
             enableSkillCommands,
             includeExtensionCommands: false
@@ -1140,8 +1155,57 @@ export class PiAcpAgent implements ACPAgent {
         })
       })()
     }, 0)
+  }
 
+  async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
+    if (!isAbsolute(params.cwd)) {
+      throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
+    }
+
+    const stored = this.findStoredSession(params.sessionId)
+    if (!stored) {
+      throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`)
+    }
+
+    const session =
+      this.sessions.maybeGet(params.sessionId) ??
+      (await this.restoreSession(params.sessionId, {
+        cwd: params.cwd,
+        mcpServers: params.mcpServers
+      }))
+    this.lastSessionCwd = params.cwd
+    this.store.upsert({ sessionId: params.sessionId, cwd: params.cwd, sessionFile: stored.sessionFile })
+
+    const piSession = findPiSession(params.sessionId)
+    if (piSession?.title) {
+      session.noteTitle(piSession.title)
+      await this.conn.sessionUpdate({
+        sessionId: session.sessionId,
+        update: {
+          sessionUpdate: 'session_info_update',
+          title: piSession.title,
+          updatedAt: piSession.updatedAt ?? new Date().toISOString()
+        }
+      })
+    }
+
+    const { configOptions, models, modes } = await getSessionConfiguration(session.proc)
+    const response = { configOptions, models, modes, _meta: { piAcp: { startupInfo: null } } }
+    this.deferAvailableCommands(session, getEnableSkillCommands(params.cwd), loadSlashCommands(params.cwd))
     return response
+  }
+
+  async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+    const session = this.sessions.maybeGet(params.sessionId)
+    if (session) {
+      try {
+        await session.cancel()
+      } catch {
+        // Cancellation is best-effort; resources must still be released.
+      }
+      this.sessions.close(params.sessionId)
+    }
+    return {}
   }
 
   async deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {

@@ -20,25 +20,25 @@ extension `confirm`/`select` UI requests.
 
 ## Gap summary
 
-| #   | Feature                                               | ACP status                      | Adapter status                       | Zed impact                                                 | Feasibility                    |
-| --- | ----------------------------------------------------- | ------------------------------- | ------------------------------------ | ---------------------------------------------------------- | ------------------------------ |
-| 1   | `usage_update` + `PromptResponse.usage`               | Stabilized (2026-06)            | Missing                              | High — no context-window/cost indicator                    | Easy (adapter-only)            |
-| 2   | Tool-call permission gating                           | Stable                          | Missing for core tools               | High — pi always runs in "YOLO mode"                       | Hard (needs pi support)        |
-| 3   | `promptCapabilities.embeddedContext`                  | Stable                          | Off by default (env-gated)           | High — @-mentions degrade to a bare URI                    | Easy (adapter-only)            |
-| 4   | Client FS (`fs/read_text_file`, `fs/write_text_file`) | Stable                          | Supported via companion `pi-acp-fs`  | Unsaved buffers visible to overridden file tools           | Implemented                    |
-| 5   | `plan` / `plan_update` updates                        | Stable                          | Supported via companion `todo`       | Plan panel for successful `todo` results                   | Implemented                    |
-| 6   | `session/resume`                                      | Stabilized (2026-04)            | Missing (only `session/load` replay) | Medium — faster reconnects                                 | Medium                         |
-| 7   | `session/close`                                       | Stabilized (2026-04)            | Missing                              | Medium — replaced by a kill-others heuristic               | Easy                           |
-| 8   | `session/fork`                                        | Unstable                        | Missing                              | Medium — no checkpoint/edit-message flows                  | Medium (pi supports branching) |
-| 9   | Client terminals (`terminal/*`)                       | Stable                          | Emulated via vendor `_meta` only     | Low-medium — display works, no client-side control         | Hard (needs pi delegation)     |
-| 10  | StopReason fidelity                                   | Stable                          | Errors mapped to `end_turn`          | Medium — Zed can't distinguish failures                    | Easy                           |
-| 11  | MCP servers                                           | Stable (+ unstable `acp` proxy) | Accepted, ignored                    | Medium — Zed-configured MCP servers silently dropped       | Hard (pi has no MCP)           |
-| 12  | `additionalDirectories`                               | Stable                          | Ignored                              | Medium — multi-root worktrees not exposed                  | Easy-medium                    |
-| 13  | `session/load` replay fidelity                        | Stable                          | Lossy                                | Medium — degraded history rendering                        | Medium                         |
-| 14  | Elicitation (`elicitation/create`)                    | Unstable                        | Missing                              | Low-medium — pi `input`/`editor` UI requests are cancelled | Medium                         |
-| 15  | ACP v2 / `auth/login`                                 | Emerging                        | v1 only, terminal-login out-of-band  | Low today                                                  | Track                          |
-| 16  | Tool kind/title polish                                | Stable                          | Partial                              | Low — cosmetic                                             | Easy                           |
-| 17  | NES, providers, document sync                         | Unstable                        | Missing                              | Low — very new, unclear Zed adoption                       | Track                          |
+| #   | Feature                                               | ACP status                      | Adapter status                      | Zed impact                                                 | Feasibility                    |
+| --- | ----------------------------------------------------- | ------------------------------- | ----------------------------------- | ---------------------------------------------------------- | ------------------------------ |
+| 1   | `usage_update` + `PromptResponse.usage`               | Stabilized (2026-06)            | Missing                             | High — no context-window/cost indicator                    | Easy (adapter-only)            |
+| 2   | Tool-call permission gating                           | Stable                          | Missing for core tools              | High — pi always runs in "YOLO mode"                       | Hard (needs pi support)        |
+| 3   | `promptCapabilities.embeddedContext`                  | Stable                          | Off by default (env-gated)          | High — @-mentions degrade to a bare URI                    | Easy (adapter-only)            |
+| 4   | Client FS (`fs/read_text_file`, `fs/write_text_file`) | Stable                          | Supported via companion `pi-acp-fs` | Unsaved buffers visible to overridden file tools           | Implemented                    |
+| 5   | `plan` / `plan_update` updates                        | Stable                          | Supported via companion `todo`      | Plan panel for successful `todo` results                   | Implemented                    |
+| 6   | `session/resume`                                      | Stabilized (2026-04)            | Implemented (no history replay)     | Medium — faster reconnects                                 | Medium                         |
+| 7   | `session/close`                                       | Stabilized (2026-04)            | Implemented                         | Explicit per-session resource cleanup                      | Implemented                    |
+| 8   | `session/fork`                                        | Unstable                        | Missing                             | Medium — no checkpoint/edit-message flows                  | Medium (pi supports branching) |
+| 9   | Client terminals (`terminal/*`)                       | Stable                          | Emulated via vendor `_meta` only    | Low-medium — display works, no client-side control         | Hard (needs pi delegation)     |
+| 10  | StopReason fidelity                                   | Stable                          | Errors mapped to `end_turn`         | Medium — Zed can't distinguish failures                    | Easy                           |
+| 11  | MCP servers                                           | Stable (+ unstable `acp` proxy) | Accepted, ignored                   | Medium — Zed-configured MCP servers silently dropped       | Hard (pi has no MCP)           |
+| 12  | `additionalDirectories`                               | Stable                          | Ignored                             | Medium — multi-root worktrees not exposed                  | Easy-medium                    |
+| 13  | `session/load` replay fidelity                        | Stable                          | Lossy                               | Medium — degraded history rendering                        | Medium                         |
+| 14  | Elicitation (`elicitation/create`)                    | Unstable                        | Missing                             | Low-medium — pi `input`/`editor` UI requests are cancelled | Medium                         |
+| 15  | ACP v2 / `auth/login`                                 | Emerging                        | v1 only, terminal-login out-of-band | Low today                                                  | Track                          |
+| 16  | Tool kind/title polish                                | Stable                          | Partial                             | Low — cosmetic                                             | Easy                           |
+| 17  | NES, providers, document sync                         | Unstable                        | Missing                             | Low — very new, unclear Zed adoption                       | Track                          |
 
 ## Details
 
@@ -112,13 +112,11 @@ emit plans. Empty lists clear the plan. pi core alone has no plan/todo tool.
 ### 6–8. Session lifecycle: `resume`, `close`, `fork`
 
 - **`session/resume`** (stabilized 2026-04, `sessionCapabilities.resume`): reconnect
-  without history replay. Today the adapter only offers `session/load`, which spawns a
-  fresh pi, replays the entire conversation as notifications, and is slow for long
-  sessions. Resume maps cleanly onto the existing `restoreSession()` path minus replay.
+  without history replay. Implemented: reuses active pi processes or restores stored
+  sessions, returning configuration and advertising the stored title and commands.
 - **`session/close`** (stabilized 2026-04, `sessionCapabilities.close`): free a session's
-  resources explicitly. The adapter retains active sessions until that session is
-  reloaded or the adapter shuts down. Advertising `close` would let the client release
-  individual sessions explicitly without disrupting other active sessions.
+  resources explicitly. Implemented: best-effort cancellation followed by process
+  disposal. Idempotent; session files and mappings remain available for load/resume.
 - **`session/fork`** (unstable, `sessionCapabilities.fork`): branch a conversation.
   pi's session storage is tree-based (branching/rewind exist in the pi TUI), so this is
   plausible: copy/branch the session file and spawn a new pi on it. Enables
@@ -190,7 +188,7 @@ ACP v2 is being drafted: `authenticate` → `auth/login` (+ `auth/logout`),
 initialize. The adapter is v1-only and handles auth out-of-band by relaunching with
 `--terminal-login` (plus a Zed-specific `_meta["terminal-auth"]` check). No action
 needed yet, but the v2 migration will touch `initialize`, auth, and session loading —
-implementing `session/resume` now (gap 6) is the best future-proofing step.
+the implemented `session/resume` capability provides a foundation.
 
 ### 16. Cosmetic: tool kinds and titles
 
@@ -221,10 +219,8 @@ them for external agents.
 1. Emit `usage_update` + `PromptResponse.usage` (small, stable, visible in Zed).
 2. Enable `embeddedContext` by default (opt-out via env).
 3. StopReason/error fidelity (`max_tokens`, surface hard errors).
-4. `session/close` + `session/resume` capabilities (explicit per-session cleanup,
-   future-proofs for v2).
-5. `session/load` replay fidelity (titles, locations, diffs from `get_messages`).
-6. Tool kind/title polish.
-7. `session/fork` on top of pi branching.
-8. Permission gating & terminal delegation — start upstream conversations with pi;
+4. `session/load` replay fidelity (titles, locations, diffs from `get_messages`).
+5. Tool kind/title polish.
+6. `session/fork` on top of pi branching.
+7. Permission gating & terminal delegation - start upstream conversations with pi;
    these are the biggest UX gaps but need pi-side hooks.

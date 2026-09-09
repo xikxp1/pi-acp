@@ -24,6 +24,8 @@ Expect some minor breaking changes.
 - Session persistence
   - pi stores its own sessions in `~/.pi/agent/sessions/...`
   - `pi-acp` stores a small mapping file at `~/.pi/pi-acp/session-map.json` so `session/load` can reattach to a previous pi session file
+  - `session/resume` supports fast reconnect without history replay, reusing active sessions
+  - `session/close` cancels ongoing work and frees runtime resources without deleting saved sessions
 - Slash commands
   - Loads file-based slash commands compatible with pi’s conventions
   - Adds a small set of built-in commands for headless/editor usage
