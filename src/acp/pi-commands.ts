@@ -27,7 +27,7 @@ export function toAvailableCommandsFromPiGetCommands(
   raw: PiRpcCommandInfo[]
 } {
   const enableSkillCommands = opts?.enableSkillCommands ?? true
-  const includeExtensionCommands = opts?.includeExtensionCommands ?? false
+  const includeExtensionCommands = opts?.includeExtensionCommands ?? true
 
   const root: any = data
   const commandsRaw: PiRpcCommandInfo[] = Array.isArray(root?.commands)

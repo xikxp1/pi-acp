@@ -430,11 +430,9 @@ export class PiAcpAgent implements ACPAgent {
     setTimeout(() => {
       void (async () => {
         try {
-          const pi = (await session.proc.getCommands()) as any
-          const { commands } = toAvailableCommandsFromPiGetCommands(pi, {
-            enableSkillCommands,
-            includeExtensionCommands: false
-          })
+          const pi = await session.proc.getCommands()
+          const { commands, raw } = toAvailableCommandsFromPiGetCommands(pi, { enableSkillCommands })
+          session.setExtensionCommands(raw)
 
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,
@@ -1184,10 +1182,8 @@ export class PiAcpAgent implements ACPAgent {
       void (async () => {
         try {
           const pi = await session.proc.getCommands()
-          const { commands } = toAvailableCommandsFromPiGetCommands(pi, {
-            enableSkillCommands,
-            includeExtensionCommands: false
-          })
+          const { commands, raw } = toAvailableCommandsFromPiGetCommands(pi, { enableSkillCommands })
+          session.setExtensionCommands(raw)
 
           await this.conn.sessionUpdate({
             sessionId: session.sessionId,

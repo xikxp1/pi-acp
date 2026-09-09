@@ -79,12 +79,16 @@ function errorMessageOf(err: unknown): string {
 }
 
 type PendingTurn = {
+  extensionCommand?: boolean
+  promptResponded?: boolean
+  agentUnsettled?: boolean
   onUsage?: (usage: Usage) => void
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
 }
 
 type QueuedTurn = {
+  extensionCommand: boolean
   onUsage?: (usage: Usage) => void
   message: string
   images: unknown[]
@@ -289,6 +293,7 @@ export class PiAcpSession {
   readonly proc: PiRpcProcess
   private readonly conn: AgentSideConnection
   private readonly fileCommands: FileSlashCommand[]
+  private extensionCommandNames = new Set<string>()
   private readonly clientSupportsFormElicitation: boolean
 
   // Used to map abort semantics to ACP stopReason.
@@ -434,6 +439,14 @@ export class PiAcpSession {
     }
   }
 
+  setExtensionCommands(commands: readonly import('./pi-commands.js').PiRpcCommandInfo[]): void {
+    this.extensionCommandNames = new Set(
+      commands.flatMap(command =>
+        command.source === 'extension' && typeof command.name === 'string' ? [command.name.trim()] : []
+      )
+    )
+  }
+
   async prompt(message: string, images: unknown[] = [], onUsage?: (usage: Usage) => void): Promise<StopReason> {
     if (this.terminalError) {
       const authError = maybeAuthRequiredError(this.terminalError)
@@ -442,10 +455,12 @@ export class PiAcpSession {
       throw new PiTurnError(errorMessageOf(this.terminalError))
     }
     // pi RPC mode disables slash command expansion, so we do it here.
-    const expandedMessage = expandSlashCommand(message, this.fileCommands)
+    const name = /^\/([^\s]+)(?:\s|$)/.exec(message)?.[1]
+    const extensionCommand = name !== undefined && this.extensionCommandNames.has(name)
+    const expandedMessage = extensionCommand ? message : expandSlashCommand(message, this.fileCommands)
 
     const turnPromise = new Promise<StopReason>((resolve, reject) => {
-      const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject, onUsage }
+      const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject, onUsage, extensionCommand }
 
       // If a turn is already running, enqueue.
       if (this.pendingTurn) {
@@ -617,7 +632,12 @@ export class PiAcpSession {
     this.settling = false
     this.turnOutcome = {}
     this.retryFailure = undefined
-    const turn = (this.pendingTurn = { resolve: t.resolve, reject: t.reject, onUsage: t.onUsage })
+    const turn: PendingTurn = (this.pendingTurn = {
+      resolve: t.resolve,
+      reject: t.reject,
+      onUsage: t.onUsage,
+      extensionCommand: t.extensionCommand
+    })
 
     // Publish queue depth (0 because we're starting the turn now).
     this.emit({
@@ -625,18 +645,23 @@ export class PiAcpSession {
       _meta: { piAcp: { queueDepth: this.turnQueue.length, running: true } }
     })
 
-    // Kick off pi, but completion is determined by pi events, not the RPC response.
-    // The prompt RPC only acknowledges acceptance; retry, compaction, or queued
-    // continuations may emit multiple `agent_end` events before `agent_settled`.
-    this.proc.prompt(t.message, t.images).catch(err => {
-      // If the subprocess errors before we get `agent_settled`, treat as error unless cancelled.
-      // Also ensure we flush any already-enqueued updates first.
-      const finish = () => {
-        if (this.terminalError || this.pendingTurn !== turn) return
-        this.failTurns(err)
-      }
-      void this.flushEmits().then(finish, finish)
-    })
+    // Extension handlers can return without starting an agent run.
+    this.proc
+      .prompt(t.message, t.images)
+      .then(() => {
+        if (this.terminalError || this.pendingTurn !== turn || !turn.extensionCommand) return
+        turn.promptResponded = true
+        if (!turn.agentUnsettled) this.handlePiEvent({ type: 'agent_settled' })
+      })
+      .catch(err => {
+        // If the subprocess errors before we get `agent_settled`, treat as error unless cancelled.
+        // Also ensure we flush any already-enqueued updates first.
+        const finish = () => {
+          if (this.terminalError || this.pendingTurn !== turn) return
+          this.failTurns(err)
+        }
+        void this.flushEmits().then(finish, finish)
+      })
   }
 
   private turnFailure(): string | undefined {
@@ -1002,6 +1027,7 @@ export class PiAcpSession {
       }
 
       case 'agent_start': {
+        if (this.pendingTurn) this.pendingTurn.agentUnsettled = true
         this.inAgentLoop = true
         break
       }
@@ -1020,6 +1046,8 @@ export class PiAcpSession {
       }
 
       case 'agent_settled': {
+        if (this.pendingTurn) this.pendingTurn.agentUnsettled = false
+        if (this.pendingTurn?.extensionCommand && !this.pendingTurn.promptResponded) break
         if (!this.pendingTurn || this.settling) break
         this.settling = true
         const turn = this.pendingTurn
