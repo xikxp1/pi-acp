@@ -285,7 +285,7 @@ export class PiRpcProcess {
   }
 
   async getSessionStats(): Promise<unknown> {
-    const res = await this.request({ type: 'get_session_stats' })
+    const res = await this.request({ type: 'get_session_stats' }, 5000)
     if (!res.success) throw new Error(`pi get_session_stats failed: ${res.error ?? JSON.stringify(res.data)}`)
     return res.data
   }
@@ -323,19 +323,28 @@ export class PiRpcProcess {
     await this.writeLine(`${JSON.stringify({ type: 'extension_ui_response', ...response })}\n`)
   }
 
-  private request(cmd: PiRpcCommand): Promise<PiRpcResponse> {
+  private request(cmd: PiRpcCommand, timeoutMs?: number): Promise<PiRpcResponse> {
     const id = crypto.randomUUID()
     const withId = { ...cmd, id }
 
     const line = `${JSON.stringify(withId)}\n`
 
+    let timer: ReturnType<typeof setTimeout> | undefined
     return new Promise<PiRpcResponse>((resolve, reject) => {
       this.pending.set(id, { resolve, reject })
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          this.pending.delete(id)
+          reject(new Error(`pi ${cmd.type} timed out`))
+        }, timeoutMs)
+      }
 
       void this.writeLine(line).catch(error => {
         this.pending.delete(id)
         reject(error)
       })
+    }).finally(() => {
+      clearTimeout(timer)
     })
   }
 

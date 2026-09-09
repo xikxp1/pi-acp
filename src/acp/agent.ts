@@ -882,14 +882,18 @@ export class PiAcpAgent implements ACPAgent {
       }
     }
 
-    const result = await session.prompt(message, images)
+    await session.refreshContextWindow()
+    let usage: PromptResponse['usage']
+    const result = await session.prompt(message, images, value => {
+      usage = value
+    })
 
     // ACP StopReason does not include "error"; if pi fails we map to end_turn for now,
     // unless we know this was a cancellation.
     const stopReason: StopReason =
       result === 'error' ? (session.wasCancelRequested() ? 'cancelled' : 'end_turn') : result
 
-    return { stopReason }
+    return { stopReason, ...(usage ? { usage } : {}) }
   }
 
   async cancel(params: CancelNotification): Promise<void> {
@@ -1137,6 +1141,7 @@ export class PiAcpAgent implements ACPAgent {
   async unstable_setSessionModel(params: { sessionId: string; modelId: string }): Promise<void> {
     const session = await this.restoreSession(params.sessionId)
     await setSessionModel(session.proc, params.modelId)
+    await session.refreshContextWindow()
     await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
   }
 
@@ -1174,6 +1179,7 @@ export class PiAcpAgent implements ACPAgent {
 
     if (configId === MODEL_CONFIG_ID) {
       await setSessionModel(session.proc, params.value)
+      await session.refreshContextWindow()
     } else if (configId === THOUGHT_LEVEL_CONFIG_ID) {
       if (!isThinkingLevel(params.value)) {
         throw RequestError.invalidParams(`Unknown thinking level: ${params.value}`)

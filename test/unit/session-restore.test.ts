@@ -34,7 +34,13 @@ test('PiAcpAgent: prompt auto-restores a missing session from SessionStore', asy
     sessionId,
     cwd: params.cwd,
     proc: params.proc,
-    async prompt(message: string, images: unknown[]) {
+    async refreshContextWindow() {},
+    async prompt(
+      message: string,
+      images: unknown[],
+      onUsage: (usage: { totalTokens: number; inputTokens: number; outputTokens: number }) => void
+    ) {
+      onUsage({ totalTokens: 120, inputTokens: 100, outputTokens: 20 })
       promptCalls.push({ message, images })
       return 'end_turn'
     },
@@ -76,6 +82,7 @@ test('PiAcpAgent: prompt auto-restores a missing session from SessionStore', asy
     } as any)
 
     assert.equal(result.stopReason, 'end_turn')
+    assert.deepEqual(result.usage, { totalTokens: 120, inputTokens: 100, outputTokens: 20 })
     assert.deepEqual(spawnCalls, [
       {
         cwd: '/tmp/store-project',
@@ -129,7 +136,8 @@ test('PiAcpAgent: setSessionConfigOption auto-restores via pi session discovery 
   const sessions = new FakeSessions((sessionId, params) => ({
     sessionId,
     cwd: params.cwd,
-    proc: params.proc
+    proc: params.proc,
+    async refreshContextWindow() {}
   }))
 
   const originalSpawn = PiRpcProcess.spawn

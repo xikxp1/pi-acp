@@ -6,7 +6,8 @@ import type {
   SessionUpdate,
   ToolCallContent,
   ToolCallLocation,
-  ToolKind
+  ToolKind,
+  Usage
 } from '@agentclientprotocol/sdk'
 import { RequestError } from '@agentclientprotocol/sdk'
 import { readFileSync } from 'node:fs'
@@ -27,6 +28,12 @@ import {
   isBashTool
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
+import {
+  contextWindowFromState,
+  streamedUsageUpdate,
+  sessionStatsUsageUpdate,
+  sessionStatsUsage
+} from './translate/usage.js'
 
 type SessionCreateParams = {
   cwd: string
@@ -39,11 +46,13 @@ type SessionCreateParams = {
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
 
 type PendingTurn = {
+  onUsage?: (usage: Usage) => void
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
 }
 
 type QueuedTurn = {
+  onUsage?: (usage: Usage) => void
   message: string
   images: unknown[]
   resolve: (reason: StopReason) => void
@@ -260,6 +269,11 @@ export class PiAcpSession {
   readonly cwd: string
   readonly mcpServers: McpServer[]
 
+  private contextWindow: number | undefined
+  private lastUsageUsed: number | undefined
+  private lastUsageAt = -Infinity
+  private settling = false
+
   private startupInfo: string | null = null
   private startupInfoSent = false
 
@@ -334,12 +348,33 @@ export class PiAcpSession {
     })
   }
 
-  async prompt(message: string, images: unknown[] = []): Promise<StopReason> {
+  async refreshContextWindow(): Promise<void> {
+    this.contextWindow = undefined
+    try {
+      this.contextWindow = contextWindowFromState(await this.proc.getState())
+    } catch {
+      this.contextWindow = undefined
+    }
+  }
+
+  async reportUsage(): Promise<Usage | undefined> {
+    try {
+      const stats = await this.proc.getSessionStats()
+      const update = sessionStatsUsageUpdate(stats)
+      if (update) this.emit({ sessionUpdate: 'usage_update', ...update })
+      await this.flushEmits()
+      return sessionStatsUsage(stats)
+    } catch {
+      return undefined
+    }
+  }
+
+  async prompt(message: string, images: unknown[] = [], onUsage?: (usage: Usage) => void): Promise<StopReason> {
     // pi RPC mode disables slash command expansion, so we do it here.
     const expandedMessage = expandSlashCommand(message, this.fileCommands)
 
     const turnPromise = new Promise<StopReason>((resolve, reject) => {
-      const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject }
+      const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject, onUsage }
 
       // If a turn is already running, enqueue.
       if (this.pendingTurn) {
@@ -475,7 +510,10 @@ export class PiAcpSession {
     this.cancelRequested = false
     this.inAgentLoop = false
 
-    this.pendingTurn = { resolve: t.resolve, reject: t.reject }
+    this.lastUsageUsed = undefined
+    this.lastUsageAt = -Infinity
+    this.settling = false
+    this.pendingTurn = { resolve: t.resolve, reject: t.reject, onUsage: t.onUsage }
 
     // Publish queue depth (0 because we're starting the turn now).
     this.emit({
@@ -515,6 +553,16 @@ export class PiAcpSession {
 
   private handlePiEvent(ev: PiRpcEvent) {
     const type = String((ev as any).type ?? '')
+
+    if (this.pendingTurn && !this.settling && (type === 'message_update' || type === 'message_end')) {
+      const update = streamedUsageUpdate(ev, this.contextWindow)
+      const now = performance.now()
+      if (update && update.used !== this.lastUsageUsed && now - this.lastUsageAt >= 1000) {
+        this.lastUsageUsed = update.used
+        this.lastUsageAt = now
+        this.emit({ sessionUpdate: 'usage_update', ...update })
+      }
+    }
 
     switch (type) {
       case 'message_update': {
@@ -837,9 +885,11 @@ export class PiAcpSession {
       }
 
       case 'agent_settled': {
-        // Ensure all updates derived from pi events are delivered before we resolve
-        // the ACP `session/prompt` request.
-        void this.flushEmits().finally(() => {
+        if (!this.pendingTurn || this.settling) break
+        this.settling = true
+        void this.reportUsage().then(async usage => {
+          if (usage) this.pendingTurn?.onUsage?.(usage)
+          await this.flushEmits()
           const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
           this.pendingTurn?.resolve(reason)
           this.pendingTurn = null
