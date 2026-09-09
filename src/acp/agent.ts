@@ -35,7 +35,8 @@ import { PiRpcProcess } from '../pi-rpc/process.js'
 import { listPiSessions, findPiSession } from './pi-sessions.js'
 import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi-messages.js'
 import { toolResultToText } from './translate/pi-tools.js'
-import { displayedCustomMessageText, subagentToolTitle } from './translate/subagents.js'
+import { displayedCustomMessageText } from './translate/subagents.js'
+import { toToolKind, toToolTitle } from './translate/tool-presentation.js'
 import {
   bashCommand,
   bashExitCode,
@@ -1003,8 +1004,18 @@ export class PiAcpAgent implements ACPAgent {
     const data = (await proc.getMessages()) as any
     const messages = Array.isArray(data?.messages) ? data.messages : []
 
+    // Assistant messages carry tool-call arguments; remember them so historic
+    // tool results can be titled like live ones.
+    const toolCallArgs = new Map<string, unknown>()
+
     for (const m of messages) {
       const role = String(m?.role ?? '')
+
+      if (role === 'assistant' && Array.isArray(m?.content)) {
+        for (const block of m.content) {
+          if (block?.type === 'toolCall' && typeof block.id === 'string') toolCallArgs.set(block.id, block.arguments)
+        }
+      }
 
       const customText = displayedCustomMessageText(m)
       if (customText) {
@@ -1082,10 +1093,10 @@ export class PiAcpAgent implements ACPAgent {
           update: {
             sessionUpdate: 'tool_call',
             toolCallId,
-            title: subagentToolTitle(toolName, m?.details),
-            kind: toolName === 'read' ? 'read' : toolName === 'write' || toolName === 'edit' ? 'edit' : 'other',
+            title: toToolTitle(toolName, toolCallArgs.get(toolCallId) ?? m?.details, params.cwd),
+            kind: toToolKind(toolName),
             status: 'completed',
-            rawInput: null,
+            rawInput: toolCallArgs.get(toolCallId) ?? null,
             rawOutput: m
           }
         })

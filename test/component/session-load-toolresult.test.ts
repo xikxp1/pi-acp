@@ -65,3 +65,66 @@ test('PiAcpAgent: loadSession replays toolResult as tool_call + tool_call_update
     PiRpcProcess.spawn = originalSpawn
   }
 })
+
+test('PiAcpAgent: loadSession titles historic tool calls from assistant toolCall arguments', async () => {
+  const originalSpawn = PiRpcProcess.spawn
+  ;(PiRpcProcess as any).spawn = async () => {
+    return {
+      onEvent: () => () => {},
+      getMessages: async () => ({
+        messages: [
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'toolCall',
+                id: 'call_grep',
+                name: 'grep',
+                arguments: { pattern: 'foo', path: '/tmp/project/src' }
+              }
+            ]
+          },
+          {
+            role: 'toolResult',
+            toolCallId: 'call_grep',
+            toolName: 'grep',
+            content: [{ type: 'text', text: 'src/a.ts:1:foo' }],
+            isError: false
+          },
+          {
+            role: 'toolResult',
+            toolCallId: 'call_orphan',
+            toolName: 'read',
+            content: [{ type: 'text', text: 'x' }],
+            isError: false
+          }
+        ]
+      }),
+      getAvailableModels: async () => ({ models: [] }),
+      getState: async () => ({ thinkingLevel: 'medium' })
+    } as any
+  }
+
+  try {
+    const conn = new FakeAgentSideConnection()
+    const agent = new PiAcpAgent(asAgentConn(conn))
+    ;(agent as any).store = new FakeStore()
+
+    await agent.loadSession({ sessionId: 's1', cwd: '/tmp/project', mcpServers: [] } as any)
+
+    const toolCalls = conn.updates.map(u => (u as any).update).filter(u => u?.sessionUpdate === 'tool_call')
+    assert.equal(toolCalls.length, 2)
+
+    assert.equal(toolCalls[0].toolCallId, 'call_grep')
+    assert.equal(toolCalls[0].title, 'grep "foo" in src')
+    assert.equal(toolCalls[0].kind, 'search')
+    assert.deepEqual(toolCalls[0].rawInput, { pattern: 'foo', path: '/tmp/project/src' })
+
+    assert.equal(toolCalls[1].toolCallId, 'call_orphan')
+    assert.equal(toolCalls[1].title, 'read')
+    assert.equal(toolCalls[1].kind, 'read')
+    assert.equal(toolCalls[1].rawInput, null)
+  } finally {
+    PiRpcProcess.spawn = originalSpawn
+  }
+})

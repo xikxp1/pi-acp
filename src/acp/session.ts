@@ -6,7 +6,6 @@ import type {
   SessionUpdate,
   ToolCallContent,
   ToolCallLocation,
-  ToolKind,
   Usage
 } from '@agentclientprotocol/sdk'
 import { RequestError } from '@agentclientprotocol/sdk'
@@ -29,13 +28,8 @@ import {
   isBashTool
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
-import {
-  displayedCustomMessageText,
-  isSubagentTool,
-  subagentToolTitle,
-  subagentResultText,
-  SubagentCards
-} from './translate/subagents.js'
+import { displayedCustomMessageText, isSubagentTool, subagentResultText, SubagentCards } from './translate/subagents.js'
+import { toToolKind, toToolTitle } from './translate/tool-presentation.js'
 import { todoDetailsToPlan } from './translate/plan.js'
 import {
   contextWindowFromState,
@@ -785,7 +779,7 @@ export class PiAcpSession {
               this.emit({
                 sessionUpdate: 'tool_call',
                 toolCallId,
-                title: subagentToolTitle(toolName, rawInput),
+                title: toToolTitle(toolName, rawInput, this.cwd),
                 kind: toToolKind(toolName),
                 status,
                 locations,
@@ -797,7 +791,7 @@ export class PiAcpSession {
               this.emit({
                 sessionUpdate: 'tool_call_update',
                 toolCallId,
-                ...(isSubagentTool(toolName) ? { title: subagentToolTitle(toolName, rawInput) } : {}),
+                title: toToolTitle(toolName, rawInput, this.cwd),
                 status,
                 locations,
                 rawInput
@@ -868,7 +862,7 @@ export class PiAcpSession {
           this.emit({
             sessionUpdate: 'tool_call',
             toolCallId,
-            title: subagentToolTitle(toolName, args),
+            title: toToolTitle(toolName, args, this.cwd),
             kind: toToolKind(toolName),
             status: 'in_progress',
             locations,
@@ -879,7 +873,7 @@ export class PiAcpSession {
           this.emit({
             sessionUpdate: 'tool_call_update',
             toolCallId,
-            ...(isSubagentTool(toolName) ? { title: subagentToolTitle(toolName, args) } : {}),
+            title: toToolTitle(toolName, args, this.cwd),
             status: 'in_progress',
             locations,
             rawInput: args
@@ -1288,18 +1282,4 @@ function formatAutoRetryMessage(ev: PiRpcEvent): string {
   if (delayMs > 0 && delaySeconds === 0) delaySeconds = 1
 
   return `Retrying (attempt ${attempt}/${maxAttempts}, waiting ${delaySeconds}s)...`
-}
-
-function toToolKind(toolName: string): ToolKind {
-  switch (toolName) {
-    case 'read':
-      return 'read'
-    case 'write':
-    case 'edit':
-      return 'edit'
-    case 'bash':
-      return 'execute'
-    default:
-      return 'other'
-  }
 }

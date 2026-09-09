@@ -20,43 +20,34 @@ extension `confirm`/`select` UI requests.
 
 ## Gap summary
 
-| #   | Feature                                               | ACP status                      | Adapter status                      | Zed impact                                                 | Feasibility                    |
-| --- | ----------------------------------------------------- | ------------------------------- | ----------------------------------- | ---------------------------------------------------------- | ------------------------------ |
-| 1   | `usage_update` + `PromptResponse.usage`               | Stabilized (2026-06)            | Missing                             | High — no context-window/cost indicator                    | Easy (adapter-only)            |
-| 2   | Tool-call permission gating                           | Stable                          | Missing for core tools              | High — pi always runs in "YOLO mode"                       | Hard (needs pi support)        |
-| 3   | `promptCapabilities.embeddedContext`                  | Stable                          | Off by default (env-gated)          | High — @-mentions degrade to a bare URI                    | Easy (adapter-only)            |
-| 4   | Client FS (`fs/read_text_file`, `fs/write_text_file`) | Stable                          | Supported via companion `pi-acp-fs` | Unsaved buffers visible to overridden file tools           | Implemented                    |
-| 5   | `plan` / `plan_update` updates                        | Stable                          | Supported via companion `todo`      | Plan panel for successful `todo` results                   | Implemented                    |
-| 6   | `session/resume`                                      | Stabilized (2026-04)            | Implemented (no history replay)     | Medium — faster reconnects                                 | Medium                         |
-| 7   | `session/close`                                       | Stabilized (2026-04)            | Implemented                         | Explicit per-session resource cleanup                      | Implemented                    |
-| 8   | `session/fork`                                        | Unstable                        | Missing                             | Medium — no checkpoint/edit-message flows                  | Medium (pi supports branching) |
-| 9   | Client terminals (`terminal/*`)                       | Stable                          | Emulated via vendor `_meta` only    | Low-medium — display works, no client-side control         | Hard (needs pi delegation)     |
-| 10  | StopReason fidelity                                   | Stable                          | Implemented                         | Failed turns surface as errors; `length` → `max_tokens`    | Implemented                    |
-| 11  | MCP servers                                           | Stable (+ unstable `acp` proxy) | Accepted, ignored                   | Medium — Zed-configured MCP servers silently dropped       | Hard (pi has no MCP)           |
-| 12  | `additionalDirectories`                               | Stable                          | Ignored                             | Medium — multi-root worktrees not exposed                  | Easy-medium                    |
-| 13  | `session/load` replay fidelity                        | Stable                          | Lossy                               | Medium — degraded history rendering                        | Medium                         |
-| 14  | Elicitation (`elicitation/create`)                    | Unstable                        | Missing                             | Low-medium — pi `input`/`editor` UI requests are cancelled | Medium                         |
-| 15  | ACP v2 / `auth/login`                                 | Emerging                        | v1 only, terminal-login out-of-band | Low today                                                  | Track                          |
-| 16  | Tool kind/title polish                                | Stable                          | Partial                             | Low — cosmetic                                             | Easy                           |
-| 17  | NES, providers, document sync                         | Unstable                        | Missing                             | Low — very new, unclear Zed adoption                       | Track                          |
+| #   | Feature                                               | ACP status                      | Adapter status                      | Zed impact                                                  | Feasibility                    |
+| --- | ----------------------------------------------------- | ------------------------------- | ----------------------------------- | ----------------------------------------------------------- | ------------------------------ |
+| 1   | `usage_update` + `PromptResponse.usage`               | Stabilized (2026-06)            | Implemented                         | Context-window/cost indicator in Zed                        | Implemented                    |
+| 2   | Tool-call permission gating                           | Stable                          | Missing for core tools              | High — pi always runs in "YOLO mode"                        | Hard (needs pi support)        |
+| 3   | `promptCapabilities.embeddedContext`                  | Stable                          | Opt-in via env (by design)          | Enable `PI_ACP_ENABLE_EMBEDDED_CONTEXT=true` for @-mentions | Not a gap                      |
+| 4   | Client FS (`fs/read_text_file`, `fs/write_text_file`) | Stable                          | Supported via companion `pi-acp-fs` | Unsaved buffers visible to overridden file tools            | Implemented                    |
+| 5   | `plan` / `plan_update` updates                        | Stable                          | Supported via companion `todo`      | Plan panel for successful `todo` results                    | Implemented                    |
+| 6   | `session/resume`                                      | Stabilized (2026-04)            | Implemented (no history replay)     | Medium — faster reconnects                                  | Medium                         |
+| 7   | `session/close`                                       | Stabilized (2026-04)            | Implemented                         | Explicit per-session resource cleanup                       | Implemented                    |
+| 8   | `session/fork`                                        | Unstable                        | Missing                             | Medium — no checkpoint/edit-message flows                   | Medium (pi supports branching) |
+| 9   | Client terminals (`terminal/*`)                       | Stable                          | Emulated via vendor `_meta` only    | Low-medium — display works, no client-side control          | Hard (needs pi delegation)     |
+| 10  | StopReason fidelity                                   | Stable                          | Implemented                         | Failed turns surface as errors; `length` → `max_tokens`     | Implemented                    |
+| 11  | MCP servers                                           | Stable (+ unstable `acp` proxy) | Accepted, ignored                   | Medium — Zed-configured MCP servers silently dropped        | Hard (pi has no MCP)           |
+| 12  | `additionalDirectories`                               | Stable                          | Ignored                             | Medium — multi-root worktrees not exposed                   | Easy-medium                    |
+| 13  | `session/load` replay fidelity                        | Stable                          | Lossy                               | Medium — degraded history rendering                         | Medium                         |
+| 14  | Elicitation (`elicitation/create`)                    | Unstable                        | Implemented (form mode)             | pi `input`/`editor` UI requests render as forms             | Implemented                    |
+| 15  | ACP v2 / `auth/login`                                 | Emerging                        | v1 only, terminal-login out-of-band | Low today                                                   | Track                          |
+| 16  | Tool kind/title polish                                | Stable                          | Implemented                         | Search/fetch/think icons; `name arg` titles                 | Implemented                    |
+| 17  | NES, providers, document sync                         | Unstable                        | Missing                             | Low — very new, unclear Zed adoption                        | Track                          |
 
 ## Details
 
-### 1. Token usage / context window (`usage_update`, `PromptResponse.usage`) — highest ROI
+### 1. Token usage / context window (`usage_update`, `PromptResponse.usage`) — RESOLVED
 
-The `usage_update` session notification (context `used`/`size` + optional cumulative
-`cost`) was stabilized in June 2026, and `PromptResponse` accepts a `usage` object
-(`totalTokens`, `inputTokens`, `outputTokens`, `thoughtTokens`, cached tokens). Zed
-forwards `PromptResponse.usage` to its thread UI and has a context-window indicator for
-ACP agents.
-
-pi already exposes everything needed: `get_session_stats` returns tokens + cost, and
-`get_state` includes message/context info. The adapter never emits either signal — the
-data is only reachable via the `/session` slash command as plain text.
-
-Suggested: after each `agent_settled` (and periodically on `message_update`), emit
-`usage_update` and attach `usage` to the `session/prompt` response in
-`src/acp/session.ts` / `src/acp/agent.ts:prompt()`.
+The adapter emits throttled `usage_update` notifications during streaming
+(`message_update`/`message_end`, context size from `get_state`) and a final one on
+`agent_settled` from `get_session_stats`, and attaches `usage` to the `session/prompt`
+response (src/acp/session.ts, src/acp/translate/usage.ts).
 
 ### 2. Permission gating for core tools
 
@@ -78,17 +69,16 @@ pi-acp repurposes modes for the thinking level. That's functional, but if permis
 gating ever lands, modes are the natural place for it and thinking level already has a
 config option (`thought_level`), so the mode slot is double-booked.
 
-### 3. `embeddedContext` disabled by default
+### 3. `embeddedContext` opt-in via env — BY DESIGN
 
-`promptCapabilities.embeddedContext` is only advertised when
-`PI_ACP_ENABLE_EMBEDDED_CONTEXT=true` (src/acp/agent.ts, initialize). With it off, Zed
-sends @-mentions as `resource_link` blocks, which the adapter reduces to a
-`[Context] <uri>` text hint (src/acp/translate/prompt.ts) — pi then has to re-read the
-file itself, and content of unsaved buffers or non-file resources is lost entirely.
+`promptCapabilities.embeddedContext` is advertised only when
+`PI_ACP_ENABLE_EMBEDDED_CONTEXT=true` (src/acp/agent.ts, initialize). With it on, Zed
+sends @-mentions as embedded `resource` blocks, which `promptToPiMessage` inlines
+(src/acp/translate/prompt.ts). With it off, @-mentions arrive as `resource_link` blocks
+reduced to a `[Context] <uri>` hint and pi re-reads the file itself.
 
-The `resource` branch of `promptToPiMessage` already handles embedded text resources
-well. Enabling the capability by default (keeping the env var as an opt-out) looks like
-a one-line, high-value change — worth verifying prompt-size behavior with large files.
+This stays opt-in deliberately (prompt-size control with large files); set the env var
+in the Zed agent server config to enable it. No default change planned.
 
 ### 4. Client filesystem delegation
 
@@ -163,8 +153,8 @@ depends on pi understanding multiple roots.
 
 History replay (src/acp/agent.ts:loadSession) loses information vs. the live stream:
 
-- `tool_call` replays use `rawInput: null` and bare tool names as titles (no command,
-  no file path), and `kind` is inferred from name only.
+- `tool_call` replays now recover titles/`rawInput`/`kind` from assistant `toolCall`
+  blocks (see #16), but still emit no `locations`.
 - No `locations`, so follow-mode/navigation doesn't work on historic calls.
 - Edit/write history has no diffs (snapshots only exist live); results render as text.
 - Assistant thinking blocks and user images are not replayed.
@@ -192,13 +182,15 @@ initialize. The adapter is v1-only and handles auth out-of-band by relaunching w
 needed yet, but the v2 migration will touch `initialize`, auth, and session loading —
 the implemented `session/resume` capability provides a foundation.
 
-### 16. Cosmetic: tool kinds and titles
+### 16. Cosmetic: tool kinds and titles — RESOLVED
 
-`toToolKind` (src/acp/session.ts) only maps `read`/`write`/`edit`/`bash`; everything
-else is `other`. ACP has `search`, `fetch`, `think`, `move`, `delete` kinds — mapping
-pi tools like `grep`/`glob`/`ls` → `search` and web tools → `fetch` gives Zed better
-icons. Tool titles for non-bash tools are the bare tool name; including the primary
-argument (path, pattern) matches what other Zed agents display.
+`src/acp/translate/tool-presentation.ts` maps `grep`/`find`/`ls` (and `ffgrep`/`fffind`)
+→ `search`, `web_search`/`fetch_content`/`source_check` → `fetch`, `todo` → `think`, in
+addition to `read`/`edit`/`execute`. Titles are `name primary-arg`: cwd-relative path for
+file tools, quoted pattern plus optional `in <path>` for search tools, query/URL for fetch
+tools, truncated at 80 chars. Titles refresh while arguments stream. `session/load` replay
+reuses the same helpers and now recovers arguments from assistant `toolCall` blocks, so
+historic tool calls get real titles and `rawInput` (partially addresses #13).
 
 ### 17. Very new unstable surface (track only)
 
@@ -218,10 +210,8 @@ them for external agents.
 
 ## Suggested priority order
 
-1. Emit `usage_update` + `PromptResponse.usage` (small, stable, visible in Zed).
-2. Enable `embeddedContext` by default (opt-out via env).
-3. `session/load` replay fidelity (titles, locations, diffs from `get_messages`).
-4. Tool kind/title polish.
-5. `session/fork` on top of pi branching.
-6. Permission gating & terminal delegation - start upstream conversations with pi;
+1. `session/load` replay fidelity (locations, diffs, thinking blocks from `get_messages`).
+2. `session/fork` on top of pi branching.
+3. `additionalDirectories` (inject extra roots into prompt/system context).
+4. Permission gating & terminal delegation - start upstream conversations with pi;
    these are the biggest UX gaps but need pi-side hooks.
