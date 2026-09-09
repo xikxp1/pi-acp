@@ -26,7 +26,7 @@ extension `confirm`/`select` UI requests.
 | 2   | Tool-call permission gating                           | Stable                          | Missing for core tools               | High — pi always runs in "YOLO mode"                       | Hard (needs pi support)        |
 | 3   | `promptCapabilities.embeddedContext`                  | Stable                          | Off by default (env-gated)           | High — @-mentions degrade to a bare URI                    | Easy (adapter-only)            |
 | 4   | Client FS (`fs/read_text_file`, `fs/write_text_file`) | Stable                          | Not used                             | Medium-high — unsaved buffers invisible to pi              | Hard (needs pi tool override)  |
-| 5   | `plan` / `plan_update` updates                        | Stable                          | Missing                              | Medium — no plan panel in Zed                              | Medium (map a todo extension)  |
+| 5   | `plan` / `plan_update` updates                        | Stable                          | Supported via companion `todo`       | Plan panel for successful `todo` results                   | Implemented                    |
 | 6   | `session/resume`                                      | Stabilized (2026-04)            | Missing (only `session/load` replay) | Medium — faster reconnects                                 | Medium                         |
 | 7   | `session/close`                                       | Stabilized (2026-04)            | Missing                              | Medium — replaced by a kill-others heuristic               | Easy                           |
 | 8   | `session/fork`                                        | Unstable                        | Missing                              | Medium — no checkpoint/edit-message flows                  | Medium (pi supports branching) |
@@ -108,11 +108,10 @@ limitation until pi offers an I/O hook.
 ### 5. Plan updates
 
 Zed renders `plan` / `plan_update` entries as a live to-do panel (used heavily by Claude
-Code's TodoWrite). pi core has no plan/todo tool, so nothing is emitted. If the user
-runs a pi todo extension, the adapter could recognize its tool calls and translate them
-to ACP `plan` updates. Without a well-known pi todo convention this stays speculative —
-a reasonable approach is to support pi's popular `todo` extension shape if/when one is
-standard, or upstream a plan event to pi.
+Code's TodoWrite). The adapter emits ACP `plan` updates after successful companion
+`todo` tool results containing `details.todos` entries with `content`, `status`, and
+`priority`. Malformed entries are skipped; malformed payloads and error results do not
+emit plans. Empty lists clear the plan. pi core alone has no plan/todo tool.
 
 ### 6–8. Session lifecycle: `resume`, `close`, `fork`
 

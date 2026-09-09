@@ -28,6 +28,7 @@ import {
   isBashTool
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
+import { todoDetailsToPlan } from './translate/plan.js'
 import {
   contextWindowFromState,
   streamedUsageUpdate,
@@ -761,8 +762,9 @@ export class PiAcpSession {
         const toolCallId = String((ev as any).toolCallId ?? '')
         if (!toolCallId) break
 
-        const result = (ev as any).result
-        const isError = Boolean((ev as any).isError)
+        const result: unknown = ev.result
+        const toolName = ev.toolName
+        const isError = Boolean(ev.isError)
         if (this.bashToolCallIds.has(toolCallId)) {
           this.emitBashOutputUpdate({
             toolCallId,
@@ -811,6 +813,11 @@ export class PiAcpSession {
           content,
           ...(hasStructuredDiff ? {} : { rawOutput: result })
         })
+
+        if (!isError && toolName === 'todo' && typeof result === 'object' && result !== null && 'details' in result) {
+          const entries = todoDetailsToPlan(result.details)
+          if (entries) this.emit({ sessionUpdate: 'plan', entries })
+        }
 
         this.cleanupToolCall(toolCallId)
         break

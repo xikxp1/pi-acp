@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PiAcpSession } from '../../src/acp/session.js'
+import type { PiRpcProcess } from '../../src/pi-rpc/process.js'
 import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpers/fakes.js'
 
 test('PiAcpSession: emits agent_message_chunk for text_delta', async () => {
@@ -122,6 +123,49 @@ test('PiAcpSession: emits tool_call + tool_call_update + completes', async () =>
     terminal_exit: { terminal_id: 't1', exit_code: 0, signal: null }
   })
   assert.equal((conn.updates[2]!.update as any).rawOutput, undefined)
+})
+
+test('PiAcpSession: emits plans only for successful todo results', async () => {
+  for (const scenario of [
+    { toolName: 'todo', isError: false, todos: [{ content: 'Task', status: 'pending', priority: 'high' }], plan: true },
+    { toolName: 'todo', isError: false, todos: [], plan: true },
+    { toolName: 'todo', isError: true, todos: [], plan: false },
+    { toolName: 'other', isError: false, todos: [], plan: false },
+    { toolName: 'todo', isError: false, todos: null, plan: false }
+  ]) {
+    const conn = new FakeAgentSideConnection()
+    const proc = new FakePiRpcProcess()
+    new PiAcpSession({
+      sessionId: 's1',
+      cwd: process.cwd(),
+      mcpServers: [],
+      proc: proc as unknown as PiRpcProcess,
+      conn: asAgentConn(conn),
+      fileCommands: []
+    })
+    const result = { content: [{ type: 'text', text: 'done' }], details: { todos: scenario.todos } }
+    proc.emit({
+      type: 'tool_execution_end',
+      toolCallId: 'todo1',
+      toolName: scenario.toolName,
+      isError: scenario.isError,
+      result
+    })
+    await new Promise(r => setTimeout(r, 0))
+    assert.deepEqual(
+      conn.updates.map(notification => notification.update),
+      [
+        {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'todo1',
+          status: scenario.isError ? 'failed' : 'completed',
+          content: [{ type: 'content', content: { type: 'text', text: 'done' } }],
+          rawOutput: result
+        },
+        ...(scenario.plan ? [{ sessionUpdate: 'plan', entries: scenario.todos }] : [])
+      ]
+    )
+  }
 })
 
 test('PiAcpSession: emits tool locations from pi path args', async () => {
