@@ -383,15 +383,7 @@ export class PiAcpAgent implements ACPAgent {
           updateNotice
         })
 
-    if (preludeText)
-      session.setStartupInfo(preludeText)
-
-      // Policy: within a single ACP connection (one client window), keep only one live pi subprocess.
-      // This avoids leaking subprocesses when clients start new sessions but don't explicitly close old ones.
-      // It does NOT affect other client windows because they run in separate agent processes.
-      //
-      // (Tests sometimes stub out `this.sessions`, so guard the call.)
-    ;(this.sessions as any).closeAllExcept?.(session.sessionId)
+    if (preludeText) session.setStartupInfo(preludeText)
 
     const response = {
       sessionId: session.sessionId,
@@ -976,10 +968,6 @@ export class PiAcpAgent implements ACPAgent {
     })
     const proc = session.proc
     const fileCommands = loadSlashCommands(params.cwd)
-
-    // Policy: within a single ACP connection (one Zed window), keep only one live pi subprocess.
-    // (Tests sometimes stub out `this.sessions`, so guard the call.)
-    ;(this.sessions as any).closeAllExcept?.(session.sessionId)
 
     // (Optional) ensure mapping stays fresh.
     this.store.upsert({

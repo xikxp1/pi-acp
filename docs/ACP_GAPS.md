@@ -116,9 +116,9 @@ emit plans. Empty lists clear the plan. pi core alone has no plan/todo tool.
   fresh pi, replays the entire conversation as notifications, and is slow for long
   sessions. Resume maps cleanly onto the existing `restoreSession()` path minus replay.
 - **`session/close`** (stabilized 2026-04, `sessionCapabilities.close`): free a session's
-  resources explicitly. The adapter instead applies a "one live pi subprocess per
-  connection" heuristic (`closeAllExcept` in src/acp/agent.ts) — advertising `close` lets
-  the client drive this and would let the heuristic be relaxed to true multi-session.
+  resources explicitly. The adapter retains active sessions until that session is
+  reloaded or the adapter shuts down. Advertising `close` would let the client release
+  individual sessions explicitly without disrupting other active sessions.
 - **`session/fork`** (unstable, `sessionCapabilities.fork`): branch a conversation.
   pi's session storage is tree-based (branching/rewind exist in the pi TUI), so this is
   plausible: copy/branch the session file and spawn a new pi on it. Enables
@@ -221,7 +221,7 @@ them for external agents.
 1. Emit `usage_update` + `PromptResponse.usage` (small, stable, visible in Zed).
 2. Enable `embeddedContext` by default (opt-out via env).
 3. StopReason/error fidelity (`max_tokens`, surface hard errors).
-4. `session/close` + `session/resume` capabilities (replaces subprocess heuristics,
+4. `session/close` + `session/resume` capabilities (explicit per-session cleanup,
    future-proofs for v2).
 5. `session/load` replay fidelity (titles, locations, diffs from `get_messages`).
 6. Tool kind/title polish.

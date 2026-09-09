@@ -84,6 +84,9 @@ export class PiRpcProcess {
   private eventHandlers: Array<(ev: PiRpcEvent) => void> = []
   private readonly preludeLines: string[] = []
   private terminalError?: Error
+  private failureHandlers = new Set<(error: Error) => void>()
+  private readonly readline: readline.Interface
+  private disposed = false
 
   private constructor(
     child: ChildProcessWithoutNullStreams,
@@ -91,7 +94,7 @@ export class PiRpcProcess {
   ) {
     this.child = child
 
-    const rl = readline.createInterface({ input: child.stdout })
+    const rl = (this.readline = readline.createInterface({ input: child.stdout }))
     rl.on('line', line => {
       if (!line.trim()) return
       let msg: any
@@ -125,7 +128,6 @@ export class PiRpcProcess {
     child.stdin.on('close', () => this.fail(new Error('pi process stdin closed')))
 
     child.on('exit', (code, signal) => {
-      this.onDispose?.()
       this.fail(new Error(`pi process exited (code=${code}, signal=${signal})`))
     })
 
@@ -218,8 +220,19 @@ export class PiRpcProcess {
     }
   }
 
+  onFailure(handler: (error: Error) => void): () => void {
+    if (this.terminalError) {
+      handler(this.terminalError)
+      return () => {}
+    }
+    this.failureHandlers.add(handler)
+    return () => this.failureHandlers.delete(handler)
+  }
+
   dispose(signal: NodeJS.Signals | number = 'SIGTERM'): void {
-    this.onDispose?.()
+    if (this.disposed) return
+    this.disposed = true
+    this.fail(new Error('pi process disposed'))
     if (this.child.killed) return
     try {
       this.child.kill(signal as any)
@@ -356,9 +369,26 @@ export class PiRpcProcess {
   }
 
   private fail(error: Error): void {
-    this.terminalError ??= error
-    for (const [, p] of this.pending) p.reject(this.terminalError)
+    if (this.terminalError) return
+    this.terminalError = error
+    for (const [, p] of this.pending) p.reject(error)
     this.pending.clear()
+    this.readline.close()
+    this.eventHandlers = []
+    const handlers = [...this.failureHandlers]
+    this.failureHandlers.clear()
+    for (const handler of handlers) {
+      try {
+        handler(error)
+      } catch {
+        // One listener must not prevent the remaining terminal cleanup.
+      }
+    }
+    try {
+      this.onDispose?.()
+    } catch {
+      // Cleanup must not turn a process failure into an uncaught exception.
+    }
   }
 
   private writeLine(line: string): Promise<void> {
@@ -372,6 +402,7 @@ export class PiRpcProcess {
       try {
         this.child.stdin.write(line, error => {
           if (error) {
+            this.fail(error)
             reject(error)
             return
           }
@@ -379,6 +410,7 @@ export class PiRpcProcess {
           resolve()
         })
       } catch (error: unknown) {
+        this.fail(error instanceof Error ? error : new Error(String(error)))
         reject(error)
       }
     })
