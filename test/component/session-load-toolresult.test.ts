@@ -128,3 +128,98 @@ test('PiAcpAgent: loadSession titles historic tool calls from assistant toolCall
     PiRpcProcess.spawn = originalSpawn
   }
 })
+
+test('PiAcpAgent: loadSession replays thinking, images, locations and historic diffs', async () => {
+  const originalSpawn = PiRpcProcess.spawn
+  ;(PiRpcProcess as any).spawn = async () => {
+    return {
+      onEvent: () => () => {},
+      getMessages: async () => ({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'look at this' },
+              { type: 'image', data: 'AAAA', mimeType: 'image/png' }
+            ]
+          },
+          {
+            role: 'assistant',
+            content: [
+              { type: 'thinking', thinking: 'Let me edit the file.' },
+              { type: 'text', text: 'Editing now.' },
+              {
+                type: 'toolCall',
+                id: 'call_edit',
+                name: 'edit',
+                arguments: { path: 'src/a.ts', edits: [{ oldText: 'foo', newText: 'bar' }] }
+              },
+              {
+                type: 'toolCall',
+                id: 'call_write',
+                name: 'write',
+                arguments: { path: '/tmp/project/b.ts', content: 'new' }
+              },
+              { type: 'toolCall', id: 'call_read', name: 'read', arguments: { path: 'src/c.ts' } }
+            ]
+          },
+          { role: 'toolResult', toolCallId: 'call_edit', toolName: 'edit', content: [{ type: 'text', text: 'ok' }] },
+          { role: 'toolResult', toolCallId: 'call_write', toolName: 'write', content: [{ type: 'text', text: 'ok' }] },
+          {
+            role: 'toolResult',
+            toolCallId: 'call_read',
+            toolName: 'read',
+            content: [{ type: 'text', text: 'ENOENT' }],
+            isError: true
+          }
+        ]
+      }),
+      getAvailableModels: async () => ({ models: [] }),
+      getState: async () => ({ thinkingLevel: 'medium' })
+    } as any
+  }
+
+  try {
+    const conn = new FakeAgentSideConnection()
+    const agent = new PiAcpAgent(asAgentConn(conn))
+    ;(agent as any).store = new FakeStore()
+
+    await agent.loadSession({ sessionId: 's1', cwd: '/tmp/project', mcpServers: [] } as any)
+    const updates = conn.updates.map(u => (u as any).update)
+
+    const userChunks = updates.filter(u => u?.sessionUpdate === 'user_message_chunk')
+    assert.deepEqual(
+      userChunks.map(u => u.content),
+      [
+        { type: 'text', text: 'look at this' },
+        { type: 'image', data: 'AAAA', mimeType: 'image/png' }
+      ]
+    )
+
+    const thought = updates.find(u => u?.sessionUpdate === 'agent_thought_chunk')
+    assert.deepEqual(thought?.content, { type: 'text', text: 'Let me edit the file.' })
+    const thoughtIx = updates.indexOf(thought)
+    const textIx = updates.findIndex(
+      u => u?.sessionUpdate === 'agent_message_chunk' && u.content?.text === 'Editing now.'
+    )
+    assert.ok(thoughtIx < textIx)
+
+    const calls = Object.fromEntries(updates.filter(u => u?.sessionUpdate === 'tool_call').map(u => [u.toolCallId, u]))
+    assert.deepEqual(calls.call_edit.locations, [{ path: '/tmp/project/src/a.ts' }])
+    assert.deepEqual(calls.call_write.locations, [{ path: '/tmp/project/b.ts' }])
+    assert.deepEqual(calls.call_read.locations, [{ path: '/tmp/project/src/c.ts' }])
+
+    const results = Object.fromEntries(
+      updates.filter(u => u?.sessionUpdate === 'tool_call_update').map(u => [u.toolCallId, u])
+    )
+    assert.deepEqual(results.call_edit.content, [{ type: 'diff', path: 'src/a.ts', oldText: 'foo', newText: 'bar' }])
+    assert.equal(results.call_edit.rawOutput, undefined)
+    assert.deepEqual(results.call_write.content, [
+      { type: 'diff', path: '/tmp/project/b.ts', oldText: null, newText: 'new' }
+    ])
+    assert.equal(results.call_read.status, 'failed')
+    assert.deepEqual(results.call_read.content, [{ type: 'content', content: { type: 'text', text: 'ENOENT' } }])
+  } finally {
+    PiRpcProcess.spawn = originalSpawn
+  }
+})

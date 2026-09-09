@@ -34,7 +34,7 @@ extension `confirm`/`select` UI requests.
 | 10  | StopReason fidelity                                   | Stable                          | Implemented                         | Failed turns surface as errors; `length` → `max_tokens`     | Implemented                    |
 | 11  | MCP servers                                           | Stable (+ unstable `acp` proxy) | Accepted, ignored                   | Medium — Zed-configured MCP servers silently dropped        | Hard (pi has no MCP)           |
 | 12  | `additionalDirectories`                               | Stable                          | Ignored                             | Medium — multi-root worktrees not exposed                   | Easy-medium                    |
-| 13  | `session/load` replay fidelity                        | Stable                          | Lossy                               | Medium — degraded history rendering                         | Medium                         |
+| 13  | `session/load` replay fidelity                        | Stable                          | Implemented                         | Titles, locations, diffs, thinking, images replayed         | Implemented                    |
 | 14  | Elicitation (`elicitation/create`)                    | Unstable                        | Implemented (form mode)             | pi `input`/`editor` UI requests render as forms             | Implemented                    |
 | 15  | ACP v2 / `auth/login`                                 | Emerging                        | v1 only, terminal-login out-of-band | Low today                                                   | Track                          |
 | 16  | Tool kind/title polish                                | Stable                          | Implemented                         | Search/fetch/think icons; `name arg` titles                 | Implemented                    |
@@ -149,20 +149,21 @@ The adapter ignores the field, so in multi-worktree Zed projects pi only sees `c
 Cheap partial fix: inject the extra roots into the prompt/system context; proper fix
 depends on pi understanding multiple roots.
 
-### 13. `session/load` replay fidelity
+### 13. `session/load` replay fidelity — RESOLVED
 
-History replay (src/acp/agent.ts:loadSession) loses information vs. the live stream:
+History replay (src/acp/agent.ts:loadSession) mines assistant `toolCall` blocks from
+`get_messages` (`src/acp/translate/tool-args.ts`, shared with the live path):
 
-- `tool_call` replays now recover titles/`rawInput`/`kind` from assistant `toolCall`
-  blocks (see #16), but still emit no `locations`.
-- No `locations`, so follow-mode/navigation doesn't work on historic calls.
-- Edit/write history has no diffs (snapshots only exist live); results render as text.
-- Assistant thinking blocks and user images are not replayed.
-- `session_info_update` (title/updatedAt) is not sent on load, and pi's own session
-  titles never reach Zed except via the manual `/name` command.
+- `tool_call` replays carry title, `kind`, `rawInput`, and `locations`.
+- Successful `edit` results render as one `diff` hunk per replacement (`oldText`/`newText`
+  from the arguments); `write` results render as a full-file diff with `oldText: null`.
+  Errors and tools without a path fall back to text output.
+- Assistant `thinking` blocks replay as `agent_thought_chunk` before the message text;
+  user `image` blocks replay as image `user_message_chunk`s.
+- `session_info_update` (title/updatedAt) is sent on load from the stored pi session.
 
-pi's `get_messages` includes tool-call inputs on assistant messages — mining those would
-restore titles, locations, and diffs for history.
+Remaining limitation: historic edit diffs are reconstructed from arguments, not from
+file snapshots, so they show the replaced fragments rather than surrounding context.
 
 ### 14. Elicitation (unstable) — RESOLVED
 
@@ -210,8 +211,7 @@ them for external agents.
 
 ## Suggested priority order
 
-1. `session/load` replay fidelity (locations, diffs, thinking blocks from `get_messages`).
-2. `session/fork` on top of pi branching.
-3. `additionalDirectories` (inject extra roots into prompt/system context).
-4. Permission gating & terminal delegation - start upstream conversations with pi;
+1. `session/fork` on top of pi branching.
+2. `additionalDirectories` (inject extra roots into prompt/system context).
+3. Permission gating & terminal delegation - start upstream conversations with pi;
    these are the biggest UX gaps but need pi-side hooks.

@@ -30,6 +30,7 @@ import {
 import { toolResultToText } from './translate/pi-tools.js'
 import { displayedCustomMessageText, isSubagentTool, subagentResultText, SubagentCards } from './translate/subagents.js'
 import { toToolKind, toToolTitle } from './translate/tool-presentation.js'
+import { getParsedEdits, getToolPath, toToolCallLocations } from './translate/tool-args.js'
 import { todoDetailsToPlan } from './translate/plan.js'
 import {
   contextWindowFromState,
@@ -114,45 +115,6 @@ function findUniqueLineNumber(text: string, needle: string): number | undefined 
   return line
 }
 
-function getToolPath(args: unknown): string | undefined {
-  const record = args as { path?: unknown; file_path?: unknown } | null | undefined
-  if (typeof record?.path === 'string') return record.path
-  if (typeof record?.file_path === 'string') return record.file_path
-  return undefined
-}
-
-// Match pi's current edit schema: { path, edits: [{ oldText, newText }] }, with
-// legacy top-level oldText/newText still accepted. Pi also normalizes stringified edits.
-// https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/edit.ts
-function getParsedEdits(args: unknown): Array<{ oldText: string; newText: string }> {
-  const record = args as { oldText?: unknown; newText?: unknown; edits?: unknown } | null | undefined
-  const parsed: Array<{ oldText: string; newText: string }> = []
-
-  if (typeof record?.oldText === 'string' && typeof record?.newText === 'string') {
-    parsed.push({ oldText: record.oldText, newText: record.newText })
-  }
-
-  let edits = record?.edits
-  if (typeof edits === 'string') {
-    try {
-      edits = JSON.parse(edits) as unknown
-    } catch {
-      edits = undefined
-    }
-  }
-
-  if (Array.isArray(edits)) {
-    for (const edit of edits) {
-      const item = edit as { oldText?: unknown; newText?: unknown } | null | undefined
-      if (typeof item?.oldText === 'string' && typeof item?.newText === 'string') {
-        parsed.push({ oldText: item.oldText, newText: item.newText })
-      }
-    }
-  }
-
-  return parsed
-}
-
 function getEditOldTexts(args: unknown): string[] {
   const record = args as { oldText?: unknown; edits?: unknown } | null | undefined
   const oldTexts = getParsedEdits(args).map(edit => edit.oldText)
@@ -176,14 +138,6 @@ function getEditOldTexts(args: unknown): string[] {
   }
 
   return oldTexts
-}
-
-function toToolCallLocations(args: unknown, cwd: string, line?: number): ToolCallLocation[] | undefined {
-  const path = getToolPath(args)
-  if (!path) return undefined
-
-  const resolvedPath = isAbsolute(path) ? path : resolvePath(cwd, path)
-  return [{ path: resolvedPath, ...(typeof line === 'number' ? { line } : {}) }]
 }
 
 export class SessionManager {

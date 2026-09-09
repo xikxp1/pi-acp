@@ -37,6 +37,8 @@ import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi
 import { toolResultToText } from './translate/pi-tools.js'
 import { displayedCustomMessageText } from './translate/subagents.js'
 import { toToolKind, toToolTitle } from './translate/tool-presentation.js'
+import { historicDiffContent, toToolCallLocations } from './translate/tool-args.js'
+import { normalizePiAssistantThinking, piImageBlocks } from './translate/pi-messages.js'
 import {
   bashCommand,
   bashExitCode,
@@ -1036,9 +1038,25 @@ export class PiAcpAgent implements ACPAgent {
             }
           })
         }
+        for (const image of piImageBlocks(m?.content)) {
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: { sessionUpdate: 'user_message_chunk', content: image }
+          })
+        }
       }
 
       if (role === 'assistant') {
+        const thinking = normalizePiAssistantThinking(m?.content)
+        if (thinking) {
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'agent_thought_chunk',
+              content: { type: 'text', text: thinking }
+            }
+          })
+        }
         const text = normalizePiAssistantText(m?.content)
         if (text) {
           await this.conn.sessionUpdate({
@@ -1088,19 +1106,23 @@ export class PiAcpAgent implements ACPAgent {
         }
 
         // Create a synthetic ACP tool call to render historic tool usage.
+        const args = toolCallArgs.get(toolCallId)
+        const locations = toToolCallLocations(args, params.cwd)
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'tool_call',
             toolCallId,
-            title: toToolTitle(toolName, toolCallArgs.get(toolCallId) ?? m?.details, params.cwd),
+            title: toToolTitle(toolName, args ?? m?.details, params.cwd),
             kind: toToolKind(toolName),
             status: 'completed',
-            rawInput: toolCallArgs.get(toolCallId) ?? null,
+            locations,
+            rawInput: args ?? null,
             rawOutput: m
           }
         })
 
+        const diff = isError ? undefined : historicDiffContent(toolName, args)
         const text = toolResultToText(m)
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -1108,8 +1130,8 @@ export class PiAcpAgent implements ACPAgent {
             sessionUpdate: 'tool_call_update',
             toolCallId,
             status: isError ? 'failed' : 'completed',
-            content: text ? [{ type: 'content', content: { type: 'text', text } }] : null,
-            rawOutput: m
+            content: diff ?? (text ? [{ type: 'content', content: { type: 'text', text } }] : null),
+            ...(diff ? {} : { rawOutput: m })
           }
         })
       }
