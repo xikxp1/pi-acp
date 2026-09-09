@@ -81,6 +81,7 @@ export class PiRpcProcess {
   private readonly pending = new Map<string, { resolve: (v: PiRpcResponse) => void; reject: (e: unknown) => void }>()
   private eventHandlers: Array<(ev: PiRpcEvent) => void> = []
   private readonly preludeLines: string[] = []
+  private terminalError?: Error
 
   private constructor(child: ChildProcessWithoutNullStreams) {
     this.child = child
@@ -114,16 +115,15 @@ export class PiRpcProcess {
       for (const h of this.eventHandlers) h(msg as PiRpcEvent)
     })
 
+    // Write callbacks do not consume the stream's separate 'error' event.
+    child.stdin.on('error', err => this.fail(err))
+    child.stdin.on('close', () => this.fail(new Error('pi process stdin closed')))
+
     child.on('exit', (code, signal) => {
-      const err = new Error(`pi process exited (code=${code}, signal=${signal})`)
-      for (const [, p] of this.pending) p.reject(err)
-      this.pending.clear()
+      this.fail(new Error(`pi process exited (code=${code}, signal=${signal})`))
     })
 
-    child.on('error', err => {
-      for (const [, p] of this.pending) p.reject(err)
-      this.pending.clear()
-    })
+    child.on('error', err => this.fail(err))
   }
 
   static async spawn(params: SpawnParams): Promise<PiRpcProcess> {
@@ -348,7 +348,19 @@ export class PiRpcProcess {
     })
   }
 
+  private fail(error: Error): void {
+    this.terminalError ??= error
+    for (const [, p] of this.pending) p.reject(this.terminalError)
+    this.pending.clear()
+  }
+
   private writeLine(line: string): Promise<void> {
+    if (this.terminalError) return Promise.reject(this.terminalError)
+    if (this.child.stdin.destroyed || !this.child.stdin.writable) {
+      this.fail(new Error('pi process stdin is not writable'))
+      return Promise.reject(this.terminalError)
+    }
+
     return new Promise<void>((resolve, reject) => {
       try {
         this.child.stdin.write(line, error => {
