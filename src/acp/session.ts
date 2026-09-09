@@ -278,6 +278,10 @@ export class PiAcpSession {
   private startupInfo: string | null = null
   private startupInfoSent = false
 
+  // Last session title forwarded to the client, used to avoid duplicate
+  // `session_info_update` notifications when polling pi state.
+  private lastTitle: string | undefined
+
   readonly proc: PiRpcProcess
   private readonly conn: AgentSideConnection
   private readonly fileCommands: FileSlashCommand[]
@@ -428,6 +432,35 @@ export class PiAcpSession {
 
     // Abort the currently running turn (if any). If nothing is running, this is a no-op.
     await this.proc.abort()
+  }
+
+  noteTitle(title: string): void {
+    this.lastTitle = title
+  }
+
+  /**
+   * Forward pi's session name to the client as a thread title. Pi RPC mode emits
+   * no event when the name changes (e.g. set by an extension), so callers poll
+   * this after each turn.
+   */
+  async syncSessionName(): Promise<void> {
+    let name: string | undefined
+    try {
+      const state = (await this.proc.getState()) as { sessionName?: unknown }
+      name = typeof state?.sessionName === 'string' && state.sessionName.trim() ? state.sessionName : undefined
+    } catch {
+      return
+    }
+
+    if (!name || name === this.lastTitle) return
+    this.lastTitle = name
+
+    this.emit({
+      sessionUpdate: 'session_info_update',
+      title: name,
+      updatedAt: new Date().toISOString()
+    })
+    await this.flushEmits()
   }
 
   wasCancelRequested(): boolean {

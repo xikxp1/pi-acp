@@ -525,6 +525,7 @@ export class PiAcpAgent implements ACPAgent {
 
         try {
           await session.proc.setSessionName(name)
+          session.noteTitle(name)
         } catch (e: any) {
           const msg = String(e?.message ?? e)
           const hint = /set_session_name/i.test(msg)
@@ -888,6 +889,9 @@ export class PiAcpAgent implements ACPAgent {
       usage = value
     })
 
+    // Extensions may have named the session during the turn (pi emits no event for it).
+    await session.syncSessionName()
+
     // ACP StopReason does not include "error"; if pi fails we map to end_turn for now,
     // unless we know this was a cancellation.
     const stopReason: StopReason =
@@ -966,6 +970,20 @@ export class PiAcpAgent implements ACPAgent {
       cwd: params.cwd,
       sessionFile: stored.sessionFile
     })
+
+    // Surface the stored session name (or first-message fallback) as the thread title.
+    const piSession = findPiSession(params.sessionId)
+    if (piSession?.title) {
+      session.noteTitle(piSession.title)
+      await this.conn.sessionUpdate({
+        sessionId: session.sessionId,
+        update: {
+          sessionUpdate: 'session_info_update',
+          title: piSession.title,
+          updatedAt: piSession.updatedAt ?? new Date().toISOString()
+        }
+      })
+    }
 
     // Replay full conversation history.
     const data = (await proc.getMessages()) as any

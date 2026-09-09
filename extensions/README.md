@@ -1,3 +1,16 @@
+# Session title extension
+
+`pi-acp-session-title.ts` names the session from the first line of the first user prompt (truncated to 80 chars; slash commands are skipped, and an existing name is never overwritten). The pi-acp adapter forwards the name to ACP clients as the thread title after each turn, so Zed threads stop showing "New Agent Thread". Without this extension (or a manual `/name`), threads stay untitled.
+
+## Install
+
+```sh
+mkdir -p ~/.pi/agent/extensions
+cp /Users/xikxp1/Projects/pi-acp/extensions/pi-acp-session-title.ts ~/.pi/agent/extensions/pi-acp-session-title.ts
+```
+
+Restart pi or run `/reload`. Re-copy after changing the file in this repo.
+
 # Todo extension
 
 `pi-acp-todo.ts` adds a minimal `todo` tool for planning and tracking multi-step tasks, with a compact TUI checklist. Every call replaces the full list; send `{ "todos": [] }` to clear it. Keep at most one item `in_progress`.
@@ -14,7 +27,7 @@ With pi installed, create its global extensions directory if needed, then symlin
 
 ```sh
 mkdir -p ~/.pi/agent/extensions
-ln -s /Users/xikxp1/Projects/pi-acp/extensions/pi-acp-todo.ts ~/.pi/agent/extensions/pi-acp-todo.ts
+cp /Users/xikxp1/Projects/pi-acp/extensions/pi-acp-todo.ts ~/.pi/agent/extensions/pi-acp-todo.ts
 ```
 
-Restart pi or run `/reload`. Do not load another extension registering `todo` alongside this one.
+Restart pi or run `/reload`. Re-copy after changing the file in this repo. Do not load another extension registering `todo` alongside this one.

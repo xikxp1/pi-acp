@@ -42,7 +42,7 @@ test('PiAcpAgent: /name sets session display name adapter-side', async () => {
   }
 
   const agent = new PiAcpAgent(asAgentConn(conn))
-  ;(agent as any).sessions = new FakeSessions({ sessionId: 's1', proc, fileCommands: [] }) as any
+  ;(agent as any).sessions = new FakeSessions({ sessionId: 's1', proc, fileCommands: [], noteTitle() {} }) as any
 
   const res = await agent.prompt({
     sessionId: 's1',
