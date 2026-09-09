@@ -15,6 +15,7 @@ import { isAbsolute, resolve as resolvePath } from 'node:path'
 import { PiRpcProcess, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/process.js'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { SessionStore } from './session-store.js'
+import { FsBridge, fsBridgeEnv, type FsCapabilities } from './fs-bridge.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
 import {
   bashCommand,
@@ -42,6 +43,7 @@ type SessionCreateParams = {
   conn: AgentSideConnection
   fileCommands?: import('./slash-commands.js').FileSlashCommand[]
   piCommand?: string
+  fsCapabilities?: FsCapabilities
   clientSupportsFormElicitation?: boolean
 }
 
@@ -198,13 +200,18 @@ export class SessionManager {
   async create(params: SessionCreateParams): Promise<PiAcpSession> {
     // Let pi manage session persistence in its default location (~/.pi/agent/sessions/...)
     // so sessions are visible to the regular `pi` CLI.
+    let sessionId = ''
+    const bridge = await FsBridge.create(params.conn, () => sessionId, params.fsCapabilities)
     let proc: PiRpcProcess
     try {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
-        piCommand: params.piCommand
+        piCommand: params.piCommand,
+        env: fsBridgeEnv(bridge),
+        onDispose: () => bridge?.close()
       })
     } catch (e) {
+      bridge?.close()
       if (e instanceof PiRpcSpawnError) {
         throw RequestError.internalError({ code: e.code }, e.message)
       }
@@ -218,7 +225,7 @@ export class SessionManager {
       state = null
     }
 
-    const sessionId = typeof state?.sessionId === 'string' ? state.sessionId : crypto.randomUUID()
+    sessionId = typeof state?.sessionId === 'string' ? state.sessionId : crypto.randomUUID()
     const sessionFile = typeof state?.sessionFile === 'string' ? state.sessionFile : null
 
     if (sessionFile) {

@@ -1,3 +1,16 @@
+# Client FS delegation extension
+
+`pi-acp-fs.ts` routes built-in file tools through the ACP client's filesystem API, exposing unsaved Zed buffers and applying text changes through the editor. Install with:
+
+```sh
+mkdir -p ~/.pi/agent/extensions
+cp /Users/xikxp1/Projects/pi-acp/extensions/pi-acp-fs.ts ~/.pi/agent/extensions/pi-acp-fs.ts
+```
+
+Restart the ACP session after installation. Re-copy after updates. The extension is inert without `PI_ACP_FS_SOCKET`, so normal TUI pi is unchanged. Avoid other extensions overriding the same tools.
+
+The adapter creates a session-local NDJSON socket (Unix socket on POSIX, named pipe on Windows) and sets `PI_ACP_FS_SOCKET` and `PI_ACP_FS_CAPS` only for advertised client capabilities. `read` needs read capability, `write` needs write capability, and `edit` needs both. UUID-correlated requests support concurrent operations and a 30-second timeout. Client errors, timeouts, and socket failures fall back to local disk. Image detection and directory creation stay local; bash and other tools still use disk. This is not a filesystem permission boundary. A timed-out write may still complete at the client after local fallback.
+
 # Session title extension
 
 `pi-acp-session-title.ts` names the session from the first line of the first user prompt (truncated to 80 chars; slash commands are skipped, and an existing name is never overwritten). The pi-acp adapter forwards the name to ACP clients as the thread title after each turn, so Zed threads stop showing "New Agent Thread". Without this extension (or a manual `/name`), threads stay untitled.

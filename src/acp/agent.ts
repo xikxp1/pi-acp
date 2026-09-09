@@ -26,6 +26,7 @@ import {
 import { getAuthMethods } from './auth.js'
 import { SessionManager, type PiAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
+import { FsBridge, fsBridgeEnv, type FsCapabilities } from './fs-bridge.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
 import { listPiSessions, findPiSession } from './pi-sessions.js'
 import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi-messages.js'
@@ -134,6 +135,7 @@ export class PiAcpAgent implements ACPAgent {
   private lastSessionCwd: string | null = null
 
   private clientSupportsFormElicitation = false
+  private fsCapabilities: FsCapabilities = {}
 
   constructor(conn: AgentSideConnection, _config?: unknown) {
     this.conn = conn
@@ -198,14 +200,18 @@ export class PiAcpAgent implements ACPAgent {
 
       const cwd = opts?.cwd ?? stored.cwd
 
+      const bridge = await FsBridge.create(this.conn, () => sessionId, this.fsCapabilities)
       let proc: PiRpcProcess
       try {
         proc = await PiRpcProcess.spawn({
           cwd,
           sessionPath: stored.sessionFile,
-          piCommand: process.env.PI_ACP_PI_COMMAND
+          piCommand: process.env.PI_ACP_PI_COMMAND,
+          env: fsBridgeEnv(bridge),
+          onDispose: () => bridge?.close()
         })
       } catch (e: any) {
+        bridge?.close()
         if (e?.name === 'PiRpcSpawnError') {
           throw RequestError.internalError({ code: e?.code }, String(e?.message ?? e))
         }
@@ -243,6 +249,10 @@ export class PiAcpAgent implements ACPAgent {
     const requested = params.protocolVersion
 
     this.clientSupportsFormElicitation = Boolean(params.clientCapabilities?.elicitation?.form)
+    this.fsCapabilities = {
+      read: Boolean(params.clientCapabilities?.fs?.readTextFile),
+      write: Boolean(params.clientCapabilities?.fs?.writeTextFile)
+    }
 
     return {
       protocolVersion: requested === supportedVersion ? requested : supportedVersion,
@@ -291,6 +301,7 @@ export class PiAcpAgent implements ACPAgent {
       conn: this.conn,
       fileCommands,
       piCommand: process.env.PI_ACP_PI_COMMAND,
+      fsCapabilities: this.fsCapabilities,
       clientSupportsFormElicitation: this.clientSupportsFormElicitation
     })
 

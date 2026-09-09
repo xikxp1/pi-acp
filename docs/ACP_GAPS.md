@@ -25,7 +25,7 @@ extension `confirm`/`select` UI requests.
 | 1   | `usage_update` + `PromptResponse.usage`               | Stabilized (2026-06)            | Missing                              | High — no context-window/cost indicator                    | Easy (adapter-only)            |
 | 2   | Tool-call permission gating                           | Stable                          | Missing for core tools               | High — pi always runs in "YOLO mode"                       | Hard (needs pi support)        |
 | 3   | `promptCapabilities.embeddedContext`                  | Stable                          | Off by default (env-gated)           | High — @-mentions degrade to a bare URI                    | Easy (adapter-only)            |
-| 4   | Client FS (`fs/read_text_file`, `fs/write_text_file`) | Stable                          | Not used                             | Medium-high — unsaved buffers invisible to pi              | Hard (needs pi tool override)  |
+| 4   | Client FS (`fs/read_text_file`, `fs/write_text_file`) | Stable                          | Supported via companion `pi-acp-fs`  | Unsaved buffers visible to overridden file tools           | Implemented                    |
 | 5   | `plan` / `plan_update` updates                        | Stable                          | Supported via companion `todo`       | Plan panel for successful `todo` results                   | Implemented                    |
 | 6   | `session/resume`                                      | Stabilized (2026-04)            | Missing (only `session/load` replay) | Medium — faster reconnects                                 | Medium                         |
 | 7   | `session/close`                                       | Stabilized (2026-04)            | Missing                              | Medium — replaced by a kill-others heuristic               | Easy                           |
@@ -92,18 +92,14 @@ a one-line, high-value change — worth verifying prompt-size behavior with larg
 
 ### 4. Client filesystem delegation
 
-The adapter never calls `fs/read_text_file` / `fs/write_text_file` even when Zed
-advertises `clientCapabilities.fs`. Consequences in Zed:
-
-- pi reads files from disk, so **unsaved editor state is invisible** to the agent.
-- pi writes to disk directly; Zed reloads buffers rather than routing the edit through
-  the editor (dirty-buffer conflicts possible).
-
-This can't be fixed purely in the adapter because pi does its own I/O. A realistic path:
-a pi extension that overrides `read`/`edit`/`write` and proxies through the adapter
-(e.g. via extension UI request or a sidecar channel) to the ACP client, falling back to
-disk when the client lacks `fs` capability. Significant effort; document as a known
-limitation until pi offers an I/O hook.
+Implemented via the companion `pi-acp-fs` extension (see `extensions/README.md`).
+When the client advertises filesystem capabilities, each new or restored session gets
+a local IPC bridge to `fs/read_text_file` / `fs/write_text_file`. The extension overrides
+`read` with read capability, `write` with write capability, and `edit` with both.
+Client errors and timeouts fall back to disk; image detection and directory creation
+remain local. Without the extension, or for other tools such as bash, unsaved buffers
+remain invisible. Existing adapter diff snapshots still use disk and may not reflect
+unsaved buffer contents.
 
 ### 5. Plan updates
 
@@ -230,5 +226,5 @@ them for external agents.
 5. `session/load` replay fidelity (titles, locations, diffs from `get_messages`).
 6. Tool kind/title polish.
 7. `session/fork` on top of pi branching.
-8. Permission gating & FS/terminal delegation — start upstream conversations with pi;
+8. Permission gating & terminal delegation — start upstream conversations with pi;
    these are the biggest UX gaps but need pi-side hooks.

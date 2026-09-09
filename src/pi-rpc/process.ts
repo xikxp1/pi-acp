@@ -70,6 +70,8 @@ export type PiRpcEvent = Record<string, unknown>
 
 type SpawnParams = {
   cwd: string
+  env?: NodeJS.ProcessEnv
+  onDispose?: () => void
   /** Optional override for `pi` executable name/path */
   piCommand?: string
   /** If set, pi will persist the session to this exact file (via `--session <path>`). */
@@ -83,7 +85,10 @@ export class PiRpcProcess {
   private readonly preludeLines: string[] = []
   private terminalError?: Error
 
-  private constructor(child: ChildProcessWithoutNullStreams) {
+  private constructor(
+    child: ChildProcessWithoutNullStreams,
+    private readonly onDispose?: () => void
+  ) {
     this.child = child
 
     const rl = readline.createInterface({ input: child.stdout })
@@ -120,6 +125,7 @@ export class PiRpcProcess {
     child.stdin.on('close', () => this.fail(new Error('pi process stdin closed')))
 
     child.on('exit', (code, signal) => {
+      this.onDispose?.()
       this.fail(new Error(`pi process exited (code=${code}, signal=${signal})`))
     })
 
@@ -140,7 +146,7 @@ export class PiRpcProcess {
     const child = spawn(cmd, args, {
       cwd: params.cwd,
       stdio: 'pipe',
-      env: process.env,
+      env: { ...process.env, ...params.env },
       shell: shouldUseShellForPiCommand(cmd)
     })
 
@@ -184,7 +190,7 @@ export class PiRpcProcess {
       // leave stderr untouched; ACP clients may capture it.
     })
 
-    const proc = new PiRpcProcess(child)
+    const proc = new PiRpcProcess(child, params.onDispose)
 
     // Best-effort handshake.
     // Important: pi may emit a get_state response pointing at a sessionFile in a directory
@@ -213,6 +219,7 @@ export class PiRpcProcess {
   }
 
   dispose(signal: NodeJS.Signals | number = 'SIGTERM'): void {
+    this.onDispose?.()
     if (this.child.killed) return
     try {
       this.child.kill(signal as any)
