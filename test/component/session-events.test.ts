@@ -285,7 +285,7 @@ test('PiAcpSession: sends cancelled response when ACP confirm is cancelled', asy
   assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-5', cancelled: true }])
 })
 
-test('PiAcpSession: cancels unsupported input and editor extension UI requests with visible fallback', async () => {
+test('PiAcpSession: cancels input and editor extension UI requests when client lacks elicitation', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
 
@@ -310,6 +310,82 @@ test('PiAcpSession: cancels unsupported input and editor extension UI requests w
   assert.equal(conn.updates.length, 2)
   assert.match((conn.updates[0]!.update as any).content.text, /input UI request is not supported/)
   assert.match((conn.updates[1]!.update as any).content.text, /editor UI request is not supported/)
+})
+
+test('PiAcpSession: maps extension input to form elicitation and returns accepted value', async () => {
+  const conn = new FakeAgentSideConnection()
+  conn.nextElicitationResponse = { action: 'accept', content: { answer: 'Ada' } }
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: [],
+    clientSupportsFormElicitation: true
+  })
+
+  proc.emit({
+    type: 'extension_ui_request',
+    id: 'ui-6',
+    method: 'input',
+    title: 'Enter name',
+    placeholder: 'Type your answer...'
+  })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.equal(conn.elicitationRequests.length, 1)
+  assert.deepEqual(conn.elicitationRequests[0], {
+    mode: 'form',
+    sessionId: 's1',
+    message: 'Enter name',
+    requestedSchema: {
+      type: 'object',
+      properties: {
+        answer: { type: 'string', title: 'Answer', description: 'Type your answer...' }
+      },
+      required: ['answer']
+    }
+  })
+  assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-6', value: 'Ada' }])
+  assert.equal(conn.updates.length, 0)
+})
+
+test('PiAcpSession: maps extension editor prefill to elicitation default and cancels on decline', async () => {
+  const conn = new FakeAgentSideConnection()
+  conn.nextElicitationResponse = { action: 'decline' }
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: [],
+    clientSupportsFormElicitation: true
+  })
+
+  proc.emit({
+    type: 'extension_ui_request',
+    id: 'ui-7',
+    method: 'editor',
+    title: 'Edit text',
+    prefill: 'draft'
+  })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.equal(conn.elicitationRequests.length, 1)
+  assert.deepEqual((conn.elicitationRequests[0] as any).requestedSchema.properties.answer, {
+    type: 'string',
+    title: 'Text',
+    default: 'draft'
+  })
+  assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-7', cancelled: true }])
 })
 
 test('PiAcpSession: emits agent_message_chunk for auto_retry_start with attempt/maxAttempts and rounded delay', async () => {

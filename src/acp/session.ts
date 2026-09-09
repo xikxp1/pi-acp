@@ -42,6 +42,7 @@ type SessionCreateParams = {
   conn: AgentSideConnection
   fileCommands?: import('./slash-commands.js').FileSlashCommand[]
   piCommand?: string
+  clientSupportsFormElicitation?: boolean
 }
 
 export type StopReason = 'end_turn' | 'cancelled' | 'error'
@@ -230,7 +231,8 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       proc,
       conn: params.conn,
-      fileCommands: params.fileCommands ?? []
+      fileCommands: params.fileCommands ?? [],
+      clientSupportsFormElicitation: params.clientSupportsFormElicitation
     })
 
     this.sessions.set(sessionId, session)
@@ -257,7 +259,8 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       proc: params.proc,
       conn: params.conn,
-      fileCommands: params.fileCommands ?? []
+      fileCommands: params.fileCommands ?? [],
+      clientSupportsFormElicitation: params.clientSupportsFormElicitation
     })
 
     this.sessions.set(sessionId, session)
@@ -285,6 +288,7 @@ export class PiAcpSession {
   readonly proc: PiRpcProcess
   private readonly conn: AgentSideConnection
   private readonly fileCommands: FileSlashCommand[]
+  private readonly clientSupportsFormElicitation: boolean
 
   // Used to map abort semantics to ACP stopReason.
   // Applies to the currently running turn.
@@ -322,6 +326,7 @@ export class PiAcpSession {
     proc: PiRpcProcess
     conn: AgentSideConnection
     fileCommands?: FileSlashCommand[]
+    clientSupportsFormElicitation?: boolean
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
@@ -329,6 +334,7 @@ export class PiAcpSession {
     this.proc = opts.proc
     this.conn = opts.conn
     this.fileCommands = opts.fileCommands ?? []
+    this.clientSupportsFormElicitation = opts.clientSupportsFormElicitation ?? false
 
     this.proc.onEvent(ev => this.handlePiEvent(ev))
   }
@@ -976,14 +982,7 @@ export class PiAcpSession {
     }
 
     if (method === 'input' || method === 'editor') {
-      this.emit({
-        sessionUpdate: 'agent_message_chunk',
-        content: {
-          type: 'text',
-          text: `Pi ${method} UI request is not supported in ACP yet; cancelling it.`
-        } satisfies ContentBlock
-      })
-      await this.proc.sendExtensionUiResponse({ id, cancelled: true })
+      await this.handleExtensionInput(ev, id, method)
       return
     }
 
@@ -1023,6 +1022,52 @@ export class PiAcpSession {
     const index = selectedOptionId === null ? null : optionIndex(selectedOptionId)
     const value = index === null ? null : (options.at(index) ?? null)
     await this.proc.sendExtensionUiResponse(value === null ? { id, cancelled: true } : { id, value })
+  }
+
+  private async handleExtensionInput(ev: PiRpcEvent, id: string, method: 'input' | 'editor'): Promise<void> {
+    if (!this.clientSupportsFormElicitation) {
+      this.emit({
+        sessionUpdate: 'agent_message_chunk',
+        content: {
+          type: 'text',
+          text: `Pi ${method} UI request is not supported by this ACP client; cancelling it.`
+        } satisfies ContentBlock
+      })
+      await this.proc.sendExtensionUiResponse({ id, cancelled: true })
+      return
+    }
+
+    const title = stringProp(ev, 'title') ?? `Pi ${method}`
+    const placeholder = stringProp(ev, 'placeholder')
+    const prefill = stringProp(ev, 'prefill')
+
+    try {
+      const response = await this.conn.unstable_createElicitation({
+        mode: 'form',
+        sessionId: this.sessionId,
+        message: title,
+        requestedSchema: {
+          type: 'object',
+          properties: {
+            answer: {
+              type: 'string',
+              title: method === 'editor' ? 'Text' : 'Answer',
+              ...(placeholder ? { description: placeholder } : {}),
+              ...(prefill ? { default: prefill } : {})
+            }
+          },
+          required: ['answer']
+        }
+      })
+
+      if (response.action === 'accept' && typeof response.content?.answer === 'string') {
+        await this.proc.sendExtensionUiResponse({ id, value: response.content.answer })
+        return
+      }
+      await this.proc.sendExtensionUiResponse({ id, cancelled: true })
+    } catch {
+      await this.proc.sendExtensionUiResponse({ id, cancelled: true })
+    }
   }
 
   private async handleExtensionConfirm(ev: PiRpcEvent, id: string): Promise<void> {

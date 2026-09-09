@@ -133,6 +133,8 @@ export class PiAcpAgent implements ACPAgent {
   // Remember recent session cwd and use it as the default filter.
   private lastSessionCwd: string | null = null
 
+  private clientSupportsFormElicitation = false
+
   constructor(conn: AgentSideConnection, _config?: unknown) {
     this.conn = conn
     void _config
@@ -216,7 +218,8 @@ export class PiAcpAgent implements ACPAgent {
         mcpServers: opts?.mcpServers ?? [],
         conn: this.conn,
         proc,
-        fileCommands
+        fileCommands,
+        clientSupportsFormElicitation: this.clientSupportsFormElicitation
       })
 
       this.lastSessionCwd = cwd
@@ -238,6 +241,8 @@ export class PiAcpAgent implements ACPAgent {
     // We currently only support ACP protocol version 1.
     const supportedVersion = 1
     const requested = params.protocolVersion
+
+    this.clientSupportsFormElicitation = Boolean(params.clientCapabilities?.elicitation?.form)
 
     return {
       protocolVersion: requested === supportedVersion ? requested : supportedVersion,
@@ -285,7 +290,8 @@ export class PiAcpAgent implements ACPAgent {
       mcpServers: params.mcpServers,
       conn: this.conn,
       fileCommands,
-      piCommand: process.env.PI_ACP_PI_COMMAND
+      piCommand: process.env.PI_ACP_PI_COMMAND,
+      clientSupportsFormElicitation: this.clientSupportsFormElicitation
     })
 
     // Fetch state + models once (parallel) to reduce startup latency.

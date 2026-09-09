@@ -178,12 +178,14 @@ History replay (src/acp/agent.ts:loadSession) loses information vs. the live str
 pi's `get_messages` includes tool-call inputs on assistant messages — mining those would
 restore titles, locations, and diffs for history.
 
-### 14. Elicitation (unstable)
+### 14. Elicitation (unstable) — RESOLVED
 
-pi extension `input` / `editor` UI requests are currently rejected with a chat notice
-("not supported in ACP yet", src/acp/session.ts). The SDK's unstable
-`elicitation/create` is designed exactly for agent-requested free-form input. When Zed
-ships client support, wiring pi `input` → elicitation would remove this dead-end.
+pi extension `input` / `editor` UI requests are now mapped to form-mode
+`elicitation/create` (single string field; `placeholder` → description, editor
+`prefill` → default) when the client advertises `clientCapabilities.elicitation.form`
+at initialize (src/acp/session.ts `handleExtensionInput`). Clients without the
+capability still get the old chat notice + cancel fallback. The SDK method is still
+`unstable_createElicitation`; revisit when it stabilizes.
 
 ### 15. ACP v2 & protocol-driven auth
 
