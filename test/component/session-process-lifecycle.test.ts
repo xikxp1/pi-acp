@@ -38,6 +38,89 @@ for (const failure of ['exit', 'dispose', 'manager close', 'stdin close', 'child
   })
 }
 
+for (const phase of ['accepted', 'awaiting acknowledgement', 'settling'] as const) {
+  test(`PiAcpSession: failure while ${phase} drains terminal cards before settling prompts`, async t => {
+    const rpc = createRpcChild({
+      respond: command => phase !== 'awaiting acknowledgement' || command.type !== 'prompt'
+    })
+    t.after(rpc.cleanup)
+    let release!: () => void
+    const blocked = new Promise<void>(resolve => {
+      release = resolve
+    })
+    t.after(() => release())
+    let terminalStarted!: () => void
+    const terminalDelivery = new Promise<void>(resolve => {
+      terminalStarted = resolve
+    })
+    const conn = new FakeAgentSideConnection()
+    conn.sessionUpdate = async msg => {
+      if (msg.update.sessionUpdate === 'tool_call_update' && msg.update.status === 'failed') {
+        terminalStarted()
+        await blocked
+      }
+      conn.updates.push(msg)
+    }
+    const session = new PiAcpSession({
+      sessionId: 'older',
+      cwd: process.cwd(),
+      mcpServers: [],
+      proc: rpc.proc,
+      conn: asAgentConn(conn)
+    })
+    const settled: string[] = []
+    const first = session.prompt('one').then(reason => {
+      settled.push(reason)
+      return reason
+    })
+    const second = session.prompt('two').then(reason => {
+      settled.push(reason)
+      return reason
+    })
+    rpc.send({
+      type: 'extension_ui_request',
+      method: 'setStatus',
+      statusKey: 'pi-acp:subagent',
+      statusText: JSON.stringify({
+        version: 1,
+        agentId: 'worker',
+        runId: 'active',
+        title: 'Review',
+        status: 'in_progress',
+        text: 'working'
+      })
+    })
+    await bounded(nextTick())
+    assert.ok(
+      conn.updates.some(
+        ({ update }) => update.sessionUpdate === 'tool_call' && update.toolCallId === 'pi-subagent-active'
+      )
+    )
+    if (phase === 'settling') rpc.send({ type: 'agent_settled' })
+    rpc.child.emit('exit', 1, null)
+    session.dispose()
+    await bounded(terminalDelivery)
+    await bounded(nextTick())
+    assert.deepEqual(settled, [])
+    assert.equal(
+      conn.updates.some(({ update }) => update.sessionUpdate === 'tool_call_update' && update.status === 'failed'),
+      false
+    )
+    release()
+    assert.deepEqual(await bounded(Promise.all([first, second])), ['error', 'error'])
+    await bounded(nextTick())
+    const terminal = conn.updates.filter(
+      ({ update }) => update.sessionUpdate === 'tool_call_update' && update.status === 'failed'
+    )
+    assert.equal(terminal.length, 1)
+    assert.deepEqual(conn.updates.at(-1)?.update, {
+      sessionUpdate: 'session_info_update',
+      _meta: { piAcp: { queueDepth: 0, running: false } }
+    })
+    assert.equal(rpc.commands.filter(command => command.type === 'prompt').length, 1)
+  })
+}
+
 test('PiAcpSession: exit before prompt acknowledgement settles the active and queued turns', async t => {
   const rpc = createRpcChild({ respond: command => command.type !== 'prompt' })
   t.after(rpc.cleanup)

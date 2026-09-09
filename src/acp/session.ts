@@ -29,6 +29,13 @@ import {
   isBashTool
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
+import {
+  displayedCustomMessageText,
+  isSubagentTool,
+  subagentToolTitle,
+  subagentResultText,
+  SubagentCards
+} from './translate/subagents.js'
 import { todoDetailsToPlan } from './translate/plan.js'
 import {
   contextWindowFromState,
@@ -312,6 +319,8 @@ export class PiAcpSession {
   // Some pi events can arrive out of order (e.g. late toolcall_* deltas after execution starts),
   // and clients may hide progress if we ever downgrade back to `pending`.
   private currentToolCalls = new Map<string, 'pending' | 'in_progress'>()
+  private readonly subagentCards = new SubagentCards()
+  private readonly subagentToolCalls = new Set<string>()
 
   // pi can emit multiple `turn_end` and `agent_end` events for a single user prompt
   // when retry, compaction, or queued continuations run. The session-level prompt
@@ -384,7 +393,9 @@ export class PiAcpSession {
     this.unsubscribeFailure?.()
     this.unsubscribeEvents = undefined
     this.unsubscribeFailure = undefined
-    this.failTurns(error)
+    for (const update of this.subagentCards.fail()) this.emit(update)
+    this.subagentToolCalls.clear()
+    void this.flushEmits().then(() => this.failTurns(error))
     this.currentToolCalls.clear()
     this.fileSnapshots.clear()
     this.fileMutationToolCallIds.clear()
@@ -598,6 +609,7 @@ export class PiAcpSession {
   }
 
   private cleanupToolCall(toolCallId: string): void {
+    this.subagentToolCalls.delete(toolCallId)
     this.currentToolCalls.delete(toolCallId)
     this.fileSnapshots.delete(toolCallId)
     this.fileMutationToolCallIds.delete(toolCallId)
@@ -627,7 +639,7 @@ export class PiAcpSession {
       // If the subprocess errors before we get `agent_settled`, treat as error unless cancelled.
       // Also ensure we flush any already-enqueued updates first.
       const finish = () => {
-        if (this.pendingTurn !== turn) return
+        if (this.terminalError || this.pendingTurn !== turn) return
         this.failTurns(err)
       }
       void this.flushEmits().then(finish, finish)
@@ -649,6 +661,11 @@ export class PiAcpSession {
     }
 
     switch (type) {
+      case 'message_end': {
+        const text = displayedCustomMessageText(ev.message)
+        if (text) this.emit({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
+        break
+      }
       case 'message_update': {
         const ame = (ev as any).assistantMessageEvent
 
@@ -716,7 +733,7 @@ export class PiAcpSession {
               this.emit({
                 sessionUpdate: 'tool_call',
                 toolCallId,
-                title: toolName,
+                title: subagentToolTitle(toolName, rawInput),
                 kind: toToolKind(toolName),
                 status,
                 locations,
@@ -728,6 +745,7 @@ export class PiAcpSession {
               this.emit({
                 sessionUpdate: 'tool_call_update',
                 toolCallId,
+                ...(isSubagentTool(toolName) ? { title: subagentToolTitle(toolName, rawInput) } : {}),
                 status,
                 locations,
                 rawInput
@@ -746,6 +764,7 @@ export class PiAcpSession {
         const toolCallId = String((ev as any).toolCallId ?? crypto.randomUUID())
         const toolName = String((ev as any).toolName ?? 'tool')
         const args = (ev as any).args
+        if (isSubagentTool(toolName)) this.subagentToolCalls.add(toolCallId)
         let line: number | undefined
 
         if (isBashTool(toolName)) {
@@ -797,7 +816,7 @@ export class PiAcpSession {
           this.emit({
             sessionUpdate: 'tool_call',
             toolCallId,
-            title: toolName,
+            title: subagentToolTitle(toolName, args),
             kind: toToolKind(toolName),
             status: 'in_progress',
             locations,
@@ -808,6 +827,7 @@ export class PiAcpSession {
           this.emit({
             sessionUpdate: 'tool_call_update',
             toolCallId,
+            ...(isSubagentTool(toolName) ? { title: subagentToolTitle(toolName, args) } : {}),
             status: 'in_progress',
             locations,
             rawInput: args
@@ -827,7 +847,11 @@ export class PiAcpSession {
           break
         }
 
-        const text = this.fileMutationToolCallIds.has(toolCallId) ? '' : toolResultToText(partial)
+        const text = this.fileMutationToolCallIds.has(toolCallId)
+          ? ''
+          : this.subagentToolCalls.has(toolCallId) || (typeof ev.toolName === 'string' && isSubagentTool(ev.toolName))
+            ? subagentResultText(partial)
+            : toolResultToText(partial)
 
         this.emit({
           sessionUpdate: 'tool_call_update',
@@ -907,6 +931,11 @@ export class PiAcpSession {
       }
 
       case 'extension_ui_request': {
+        if (ev.method === 'setStatus' && ev.statusKey === 'pi-acp:subagent') {
+          const update = this.subagentCards.update(ev.statusText)
+          if (update) this.emit(update)
+          break
+        }
         void this.handleExtensionUiRequest(ev).catch(() => {
           const id = stringProp(ev, 'id')
           if (!id) {
@@ -980,10 +1009,10 @@ export class PiAcpSession {
         const turn = this.pendingTurn
         void this.reportUsage()
           .then(async usage => {
-            if (this.pendingTurn !== turn) return
+            if (this.terminalError || this.pendingTurn !== turn) return
             if (usage) turn.onUsage?.(usage)
             await this.flushEmits()
-            if (this.pendingTurn !== turn) return
+            if (this.terminalError || this.pendingTurn !== turn) return
             const reason: StopReason = this.cancelRequested ? 'cancelled' : 'end_turn'
             turn.resolve(reason)
             this.pendingTurn = null
@@ -1005,7 +1034,7 @@ export class PiAcpSession {
             }
           })
           .catch(error => {
-            if (this.pendingTurn === turn) this.failTurns(error)
+            if (!this.terminalError && this.pendingTurn === turn) this.failTurns(error)
           })
         break
       }

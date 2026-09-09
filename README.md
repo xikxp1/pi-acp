@@ -18,6 +18,9 @@ Expect some minor breaking changes.
   - Relative file paths from pi are resolved against the session cwd before being emitted as ACP tool locations, which enables follow-along features in clients like Zed
   - For `edit`, `pi-acp` attempts to infer a 1-based line number from a unique `oldText` match in the pre-edit file snapshot and includes it in the emitted tool location when possible
   - For `edit`, `pi-acp` snapshots the file before the tool runs and emits an ACP **structured diff** (`oldText`/`newText`) on completion when possible
+- Subagent visibility
+  - Displays extension completion messages and descriptive `Agent` tool progress
+  - Live top-level subagent output is available with the manually installed [subagent companion extension](extensions/README.md#subagent-output-extension)
 - Session persistence
   - pi stores its own sessions in `~/.pi/agent/sessions/...`
   - `pi-acp` stores a small mapping file at `~/.pi/pi-acp/session-map.json` so `session/load` can reattach to a previous pi session file
@@ -194,6 +197,7 @@ Project layout:
 
 ## Limitations
 
+- Live subagent cards require the companion extension and a compatible `@tintinweb/pi-subagents` installation. Workflow-owned/nested agents and Zed's native child-session navigation are not supported. Live transcripts are display-only; session reload replays stored completion messages, not the live cards.
 - No ACP filesystem delegation (`fs/*`) and no ACP terminal delegation (`terminal/*`). pi reads/writes and executes locally.
 - MCP servers are accepted in ACP params and stored in session state, but not wired through to pi in this adapter. If you use [pi MCP adapter](https://github.com/nicobailon/pi-mcp-adapter) it will be available in the ACP client.
 - Assistant streaming is currently sent as `agent_message_chunk` (no separate thought stream).

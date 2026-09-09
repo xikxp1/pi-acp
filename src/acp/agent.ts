@@ -31,6 +31,7 @@ import { PiRpcProcess } from '../pi-rpc/process.js'
 import { listPiSessions, findPiSession } from './pi-sessions.js'
 import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi-messages.js'
 import { toolResultToText } from './translate/pi-tools.js'
+import { displayedCustomMessageText, subagentToolTitle } from './translate/subagents.js'
 import {
   bashCommand,
   bashExitCode,
@@ -997,6 +998,14 @@ export class PiAcpAgent implements ACPAgent {
     for (const m of messages) {
       const role = String(m?.role ?? '')
 
+      const customText = displayedCustomMessageText(m)
+      if (customText) {
+        await this.conn.sessionUpdate({
+          sessionId: session.sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: customText } }
+        })
+      }
+
       if (role === 'user') {
         const text = normalizePiMessageText(m?.content)
         if (text) {
@@ -1065,7 +1074,7 @@ export class PiAcpAgent implements ACPAgent {
           update: {
             sessionUpdate: 'tool_call',
             toolCallId,
-            title: toolName,
+            title: subagentToolTitle(toolName, m?.details),
             kind: toolName === 'read' ? 'read' : toolName === 'write' || toolName === 'edit' ? 'edit' : 'other',
             status: 'completed',
             rawInput: null,
