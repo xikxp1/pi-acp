@@ -1,6 +1,7 @@
-import { readdirSync, readFileSync, statSync, openSync, readSync, closeSync, existsSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync, openSync, readSync, closeSync, existsSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { join, resolve, isAbsolute } from 'node:path'
+import { join, resolve, isAbsolute, dirname } from 'node:path'
 
 export type PiSessionListItem = {
   sessionId: string
@@ -330,4 +331,34 @@ export function findPiSession(sessionId: string): PiSessionListItem | null {
 
 export function findPiSessionFile(sessionId: string): string | null {
   return findPiSession(sessionId)?.sessionFile ?? null
+}
+
+/**
+ * Copy a pi session file next to its source with a fresh header id, so a new pi
+ * process can open it as an independent session. The full append-only entry tree
+ * is preserved, giving the fork the same fidelity as `session/load`.
+ */
+export function forkPiSessionFile(sourceFile: string, cwd: string): { sessionId: string; sessionFile: string } {
+  const raw = readFileSync(sourceFile, 'utf8')
+  const newline = raw.indexOf('\n')
+  const firstLine = newline === -1 ? raw : raw.slice(0, newline)
+  const rest = newline === -1 ? '' : raw.slice(newline)
+
+  let header: Record<string, unknown>
+  try {
+    header = JSON.parse(firstLine) as Record<string, unknown>
+  } catch {
+    throw new Error(`Invalid pi session header in ${sourceFile}`)
+  }
+  if (header?.type !== 'session' || typeof header.id !== 'string') {
+    throw new Error(`Invalid pi session header in ${sourceFile}`)
+  }
+
+  const sessionId = randomUUID()
+  const timestamp = new Date().toISOString()
+  const forkedHeader = { ...header, id: sessionId, timestamp, cwd, parentSession: sourceFile }
+  const sessionFile = join(dirname(sourceFile), `${timestamp.replace(/[:.]/g, '-')}_${sessionId}.jsonl`)
+
+  writeFileSync(sessionFile, JSON.stringify(forkedHeader) + rest, { flag: 'wx' })
+  return { sessionId, sessionFile }
 }

@@ -6,6 +6,8 @@ import {
   type CancelNotification,
   type CloseSessionRequest,
   type CloseSessionResponse,
+  type ForkSessionRequest,
+  type ForkSessionResponse,
   type ResumeSessionRequest,
   type ResumeSessionResponse,
   type InitializeRequest,
@@ -32,7 +34,7 @@ import { PiTurnError, SessionManager, type PiAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
 import { FsBridge, fsBridgeEnv, type FsCapabilities } from './fs-bridge.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
-import { listPiSessions, findPiSession } from './pi-sessions.js'
+import { listPiSessions, findPiSession, forkPiSessionFile } from './pi-sessions.js'
 import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi-messages.js'
 import { toolResultToText } from './translate/pi-tools.js'
 import { displayedCustomMessageText } from './translate/subagents.js'
@@ -287,7 +289,8 @@ export class PiAcpAgent implements ACPAgent {
           list: {},
           delete: {},
           resume: {},
-          close: {}
+          close: {},
+          fork: {}
         }
       }
     }
@@ -1227,6 +1230,53 @@ export class PiAcpAgent implements ACPAgent {
 
     const { configOptions, models, modes } = await getSessionConfiguration(session.proc)
     const response = { configOptions, models, modes, _meta: { piAcp: { startupInfo: null } } }
+    this.deferAvailableCommands(session, getEnableSkillCommands(params.cwd), loadSlashCommands(params.cwd))
+    return response
+  }
+
+  async unstable_forkSession(params: ForkSessionRequest): Promise<ForkSessionResponse> {
+    if (!isAbsolute(params.cwd)) {
+      throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
+    }
+
+    const stored = this.findStoredSession(params.sessionId)
+    if (!stored) {
+      throw RequestError.invalidParams(`Unknown sessionId: ${params.sessionId}`)
+    }
+
+    // Fork by copying the session file; the source pi process (if any) keeps running.
+    let forked: { sessionId: string; sessionFile: string }
+    try {
+      forked = forkPiSessionFile(stored.sessionFile, params.cwd)
+    } catch (e: any) {
+      throw RequestError.internalError({ sessionFile: stored.sessionFile }, String(e?.message ?? e))
+    }
+
+    this.store.upsert({ sessionId: forked.sessionId, cwd: params.cwd, sessionFile: forked.sessionFile })
+    this.lastSessionCwd = params.cwd
+
+    const session = await this.restoreSession(forked.sessionId, {
+      cwd: params.cwd,
+      mcpServers: params.mcpServers
+    })
+
+    const sourceTitle = findPiSession(params.sessionId)?.title
+    if (sourceTitle) {
+      session.noteTitle(sourceTitle)
+      await this.conn.sessionUpdate({
+        sessionId: session.sessionId,
+        update: { sessionUpdate: 'session_info_update', title: sourceTitle, updatedAt: new Date().toISOString() }
+      })
+    }
+
+    const { configOptions, models, modes } = await getSessionConfiguration(session.proc)
+    const response = {
+      sessionId: forked.sessionId,
+      configOptions,
+      models,
+      modes,
+      _meta: { piAcp: { startupInfo: null, forkedFrom: params.sessionId } }
+    }
     this.deferAvailableCommands(session, getEnableSkillCommands(params.cwd), loadSlashCommands(params.cwd))
     return response
   }
