@@ -54,6 +54,37 @@ The extension activates only in RPC mode with `PI_ACP_SUBAGENTS=1`, which pi-acp
 
 Without this companion, pi-acp still displays stored custom completion messages and the progress/final output available from ordinary `Agent` calls.
 
+# BTW side-question extension
+
+`pi-btw.ts` adds a private, in-memory side conversation using the current model, thinking level, and model-registry credentials. It works in pi TUI and RPC (pi-acp / Zed).
+
+## Install
+
+From this repository's root:
+
+```sh
+mkdir -p ~/.pi/agent/extensions
+cp extensions/pi-btw.ts ~/.pi/agent/extensions/pi-btw.ts
+```
+
+Remove `"npm:@narumitw/pi-btw"` from the `packages` array in `~/.pi/agent/settings.json` to avoid duplicate commands. Restart pi / the ACP session, or use `/reload` in TUI. Re-copy after updates. No build step is needed.
+
+## Commands and display
+
+- `/btw <question>` starts a side thread or asks a follow-up. Without arguments, it shows usage.
+- `/btw:new <question>` discards the thread (cancelling a pending request) and captures fresh branch context.
+- `/btw:bring` brings the latest successful answer to main. In TUI it prefills the editor with the answer, confirming before replacing an existing draft. In RPC it adds a displayed `btw` custom message containing the question and answer, without triggering a turn.
+
+TUI shows a thinking status followed by a Markdown viewer for the latest Q/A. Use arrows or PgUp/PgDn to scroll; Esc or q closes. RPC sends the complete Q/A as a Markdown notification, rendered by pi-acp in Zed. Errors also use notifications. Side questions and answers never enter main history/context unless explicitly brought back (and, in TUI, submitted).
+
+## Limitations
+
+- Threads are memory-only and reset on session start, replacement, reload, and shutdown. Tree navigation within one session keeps the side thread; use `/btw:new` for a fresh background snapshot.
+- Background is capped at 40,000 characters, keeping recent branch user/assistant text and short tool-call summaries. Images, thinking, tool results, and compaction summaries are omitted. Follow-ups retain their side history without automatic compaction; use `/btw:new` for long threads.
+- No tools, streaming answer display, model picker, persistence, or usage accounting in main-session totals. Calls still incur provider usage. Current pi-ai no longer exports standalone `completeSimple` from its root, so the extension uses the old extension's equivalent registry-provider `streamSimple(...).result()` with resolved auth, headers, environment, and base URL.
+- Cancellation honors `ctx.signal` when present and aborts on replacement/shutdown. Idle extension commands normally have no `ctx.signal`, so RPC abort / TUI Esc may not cancel the request; `/btw:new <question>` replaces it. A second `/btw` is rejected while one is pending.
+- Print/JSON modes have no notification UI. The supported display modes are TUI and RPC.
+
 # Todo extension
 
 `pi-acp-todo.ts` adds a minimal `todo` tool for planning and tracking multi-step tasks, with a compact TUI checklist. Every call replaces the full list; send `{ "todos": [] }` to clear it. Keep at most one item `in_progress`.
