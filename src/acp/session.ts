@@ -14,7 +14,7 @@ import { isAbsolute, resolve as resolvePath } from 'node:path'
 import { PiRpcProcess, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/process.js'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { SessionStore } from './session-store.js'
-import { FsBridge, fsBridgeEnv, type FsCapabilities } from './fs-bridge.js'
+import { ClientBridge, clientBridgeEnv, type ClientCapabilities } from './client-bridge.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
 import {
   bashCommand,
@@ -47,7 +47,7 @@ type SessionCreateParams = {
   conn: AgentSideConnection
   fileCommands?: import('./slash-commands.js').FileSlashCommand[]
   piCommand?: string
-  fsCapabilities?: FsCapabilities
+  clientCapabilities?: ClientCapabilities
   clientSupportsFormElicitation?: boolean
 }
 
@@ -187,13 +187,16 @@ export class SessionManager {
     // Let pi manage session persistence in its default location (~/.pi/agent/sessions/...)
     // so sessions are visible to the regular `pi` CLI.
     let sessionId = ''
-    const bridge = await FsBridge.create(params.conn, () => sessionId, params.fsCapabilities)
+    const ref: { session?: PiAcpSession } = {}
+    const bridge = await ClientBridge.create(params.conn, () => sessionId, params.clientCapabilities, {
+      onTerminalCreated: (toolCallId, terminalId) => ref.session?.attachClientTerminal(toolCallId, terminalId)
+    })
     let proc: PiRpcProcess
     try {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
         piCommand: params.piCommand,
-        env: fsBridgeEnv(bridge),
+        env: clientBridgeEnv(bridge),
         appendSystemPrompt: additionalDirectoriesSystemPrompt(params.additionalDirectories ?? []),
         onDispose: () => bridge?.close()
       })
@@ -234,6 +237,7 @@ export class SessionManager {
       fileCommands: params.fileCommands ?? [],
       clientSupportsFormElicitation: params.clientSupportsFormElicitation
     })
+    ref.session = session
 
     this.sessions.set(sessionId, session)
     return session
@@ -326,6 +330,9 @@ export class PiAcpSession {
   private fileMutationToolCallIds = new Set<string>()
   private bashToolCallIds = new Set<string>()
   private bashOutputSnapshots = new Map<string, string>()
+  // bash tool calls executed in a client terminal (via the pi-acp-terminal extension),
+  // keyed by pi toolCallId -> ACP terminalId. The client owns their output.
+  private clientTerminals = new Map<string, string>()
 
   // Ensure `session/update` notifications are sent in order and can be awaited
   // before completing a `session/prompt` request.
@@ -578,6 +585,7 @@ export class PiAcpSession {
     includeTerminal: boolean
   }): void {
     this.bashToolCallIds.add(params.toolCallId)
+    const clientTerminalId = this.clientTerminals.get(params.toolCallId)
     this.emit({
       sessionUpdate: params.sessionUpdate,
       toolCallId: params.toolCallId,
@@ -585,8 +593,26 @@ export class PiAcpSession {
       kind: 'execute',
       status: params.status,
       locations: params.locations,
-      ...(params.includeTerminal ? { content: bashTerminalContent(params.toolCallId) } : {}),
-      ...(params.includeTerminal ? { _meta: bashTerminalInfoMeta(params.toolCallId, this.cwd) } : {})
+      ...(params.includeTerminal ? { content: bashTerminalContent(clientTerminalId ?? params.toolCallId) } : {}),
+      ...(params.includeTerminal && !clientTerminalId
+        ? { _meta: bashTerminalInfoMeta(params.toolCallId, this.cwd) }
+        : {})
+    })
+  }
+
+  /**
+   * Called by the client bridge once the pi-acp-terminal extension started a bash
+   * command in a real ACP client terminal. Swap the emulated terminal for it and
+   * stop forwarding pi's output, which the client already renders.
+   */
+  attachClientTerminal(toolCallId: string | undefined, terminalId: string): void {
+    if (!toolCallId) return
+    this.clientTerminals.set(toolCallId, terminalId)
+    if (!this.bashToolCallIds.has(toolCallId)) return
+    this.emit({
+      sessionUpdate: 'tool_call_update',
+      toolCallId,
+      content: bashTerminalContent(terminalId)
     })
   }
 
@@ -596,6 +622,13 @@ export class PiAcpSession {
     result: unknown
     isError?: boolean
   }): void {
+    if (this.clientTerminals.has(params.toolCallId)) {
+      if (params.status !== 'in_progress') {
+        this.emit({ sessionUpdate: 'tool_call_update', toolCallId: params.toolCallId, status: params.status })
+      }
+      return
+    }
+
     const text = bashResultText(params.result)
     const previous = this.bashOutputSnapshots.get(params.toolCallId) ?? ''
     const delta = bashOutputDelta(previous, text)
@@ -621,6 +654,7 @@ export class PiAcpSession {
     this.fileMutationToolCallIds.delete(toolCallId)
     this.bashToolCallIds.delete(toolCallId)
     this.bashOutputSnapshots.delete(toolCallId)
+    this.clientTerminals.delete(toolCallId)
   }
 
   private startTurn(t: QueuedTurn): void {

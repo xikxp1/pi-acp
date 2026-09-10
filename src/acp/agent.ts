@@ -32,7 +32,7 @@ import {
 import { getAuthMethods } from './auth.js'
 import { PiTurnError, SessionManager, type PiAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
-import { FsBridge, fsBridgeEnv, type FsCapabilities } from './fs-bridge.js'
+import { ClientBridge, clientBridgeEnv, type ClientCapabilities } from './client-bridge.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
 import { listPiSessions, findPiSession, forkPiSessionFile } from './pi-sessions.js'
 import {
@@ -150,7 +150,7 @@ export class PiAcpAgent implements ACPAgent {
   private lastSessionCwd: string | null = null
 
   private clientSupportsFormElicitation = false
-  private fsCapabilities: FsCapabilities = {}
+  private clientCapabilities: ClientCapabilities = {}
 
   constructor(conn: AgentSideConnection, _config?: unknown) {
     this.conn = conn
@@ -217,14 +217,17 @@ export class PiAcpAgent implements ACPAgent {
       const additionalDirectories =
         opts?.additionalDirectories ?? this.store.get(sessionId)?.additionalDirectories ?? []
 
-      const bridge = await FsBridge.create(this.conn, () => sessionId, this.fsCapabilities)
+      const bridge = await ClientBridge.create(this.conn, () => sessionId, this.clientCapabilities, {
+        onTerminalCreated: (toolCallId, terminalId) =>
+          this.sessions.maybeGet(sessionId)?.attachClientTerminal(toolCallId, terminalId)
+      })
       let proc: PiRpcProcess
       try {
         proc = await PiRpcProcess.spawn({
           cwd,
           sessionPath: stored.sessionFile,
           piCommand: process.env.PI_ACP_PI_COMMAND,
-          env: fsBridgeEnv(bridge),
+          env: clientBridgeEnv(bridge),
           appendSystemPrompt: additionalDirectoriesSystemPrompt(additionalDirectories),
           onDispose: () => bridge?.close()
         })
@@ -268,9 +271,10 @@ export class PiAcpAgent implements ACPAgent {
     const requested = params.protocolVersion
 
     this.clientSupportsFormElicitation = Boolean(params.clientCapabilities?.elicitation?.form)
-    this.fsCapabilities = {
+    this.clientCapabilities = {
       read: Boolean(params.clientCapabilities?.fs?.readTextFile),
-      write: Boolean(params.clientCapabilities?.fs?.writeTextFile)
+      write: Boolean(params.clientCapabilities?.fs?.writeTextFile),
+      terminal: Boolean(params.clientCapabilities?.terminal)
     }
 
     return {
@@ -324,7 +328,7 @@ export class PiAcpAgent implements ACPAgent {
       conn: this.conn,
       fileCommands,
       piCommand: process.env.PI_ACP_PI_COMMAND,
-      fsCapabilities: this.fsCapabilities,
+      clientCapabilities: this.clientCapabilities,
       clientSupportsFormElicitation: this.clientSupportsFormElicitation
     })
 

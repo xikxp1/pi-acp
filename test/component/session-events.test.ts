@@ -125,6 +125,49 @@ test('PiAcpSession: emits tool_call + tool_call_update + completes', async () =>
   assert.equal((conn.updates[2]!.update as any).rawOutput, undefined)
 })
 
+test('PiAcpSession: swaps emulated terminal for a client terminal and stops forwarding output', async () => {
+  const conn = new FakeAgentSideConnection()
+  const proc = new FakePiRpcProcess()
+
+  const session = new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  proc.emit({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'bash', args: { command: 'ls' } })
+  session.attachClientTerminal('t1', 'client-term-9')
+  session.attachClientTerminal(undefined, 'ignored')
+  proc.emit({
+    type: 'tool_execution_update',
+    toolCallId: 't1',
+    partialResult: { content: [{ type: 'text', text: 'running' }] }
+  })
+  proc.emit({
+    type: 'tool_execution_end',
+    toolCallId: 't1',
+    isError: true,
+    result: { content: [{ type: 'text', text: 'done' }] }
+  })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  assert.equal(conn.updates.length, 3)
+  assert.equal(conn.updates[0]!.update.sessionUpdate, 'tool_call')
+  assert.deepEqual((conn.updates[0]!.update as any).content, [{ type: 'terminal', terminalId: 't1' }])
+
+  assert.deepEqual(conn.updates[1]!.update, {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 't1',
+    content: [{ type: 'terminal', terminalId: 'client-term-9' }]
+  })
+
+  assert.deepEqual(conn.updates[2]!.update, { sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'failed' })
+})
+
 test('PiAcpSession: emits plans only for successful todo results', async () => {
   for (const scenario of [
     { toolName: 'todo', isError: false, todos: [{ content: 'Task', status: 'pending', priority: 'high' }], plan: true },

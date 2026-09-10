@@ -11,6 +11,25 @@ Restart the ACP session after installation. Re-copy after updates. The extension
 
 The adapter creates a session-local NDJSON socket (Unix socket on POSIX, named pipe on Windows) and sets `PI_ACP_FS_SOCKET` and `PI_ACP_FS_CAPS` only for advertised client capabilities. `read` needs read capability, `write` needs write capability, and `edit` needs both. UUID-correlated requests support concurrent operations and a 30-second timeout. Client errors, timeouts, and socket failures fall back to local disk. Image detection and directory creation stay local; bash and other tools still use disk. This is not a filesystem permission boundary. A timed-out write may still complete at the client after local fallback.
 
+# Client terminal delegation extension
+
+`pi-acp-terminal.ts` runs the built-in `bash` tool in a real ACP client terminal (`terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, `terminal/release`) instead of a local child process. In Zed, each command appears as a live terminal inside the tool card, using the standard ACP `{type:"terminal"}` content rather than the Zed-only `_meta.terminal_*` emulation, and the client can stop the command itself. Install with:
+
+```sh
+mkdir -p ~/.pi/agent/extensions
+cp /Users/xikxp1/Projects/pi-acp/extensions/pi-acp-terminal.ts ~/.pi/agent/extensions/pi-acp-terminal.ts
+```
+
+Restart the ACP session after installation. Re-copy after updates. The extension activates only when the adapter sets `PI_ACP_TERMINAL=1` (client advertised `clientCapabilities.terminal`) together with the bridge socket in `PI_ACP_FS_SOCKET`, so normal TUI pi is unchanged. It shares the socket with `pi-acp-fs.ts`; both can be installed together. Avoid other extensions overriding `bash`.
+
+How it works and limitations:
+
+- The whole command string is sent as `command` with empty `args`; Zed runs it through the user's shell (`$SHELL -c`) with the session `cwd`. Only environment variables pi adds on top of the process environment (for example `PI_SESSION_ID`, `PI_MODEL`) are forwarded; the client terminal already has the user's shell environment.
+- ACP has no output push, so the adapter polls `terminal/output` every ~150 ms and forwards deltas to pi, which still applies its own truncation and rendering. Output is retained by the client up to 4 MiB; if the client truncates from the front, the adapter re-anchors on the already forwarded tail.
+- pi's `timeout` argument and turn cancellation are honored by sending `terminal/kill`; pi reports `Command timed out` / `Command aborted` as usual. Commands are never re-run: if the client fails to create the terminal (or the bridge is unavailable) the command runs locally instead, but any failure after the terminal was created surfaces as a tool error.
+- If pi exits mid-command, the adapter kills orphaned client terminals. Terminals are released after the final output read; the client keeps rendering the finished output in the tool card.
+- Exit codes come from the client; a command terminated by a signal reports a `null` exit code to pi. Zed disables pagers (`PAGER`, `GIT_PAGER`) in agent terminals.
+
 # Session title extension
 
 `pi-acp-session-title.ts` names the session from the first line of the first user prompt (truncated to 80 chars; slash commands are skipped, and an existing name is never overwritten). The pi-acp adapter forwards the name to ACP clients as the thread title after each turn, so Zed threads stop showing "New Agent Thread". Without this extension (or a manual `/name`), threads stay untitled.

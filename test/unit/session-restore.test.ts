@@ -89,7 +89,7 @@ test('PiAcpAgent: prompt auto-restores a missing session from SessionStore', asy
         cwd: '/tmp/store-project',
         sessionPath: '/tmp/store-project/session.jsonl',
         piCommand: process.env.PI_ACP_PI_COMMAND,
-        env: { PI_ACP_FS_SOCKET: undefined, PI_ACP_FS_CAPS: undefined },
+        env: { PI_ACP_FS_SOCKET: undefined, PI_ACP_FS_CAPS: undefined, PI_ACP_TERMINAL: undefined },
         appendSystemPrompt: undefined,
         onDispose: spawnCalls[0].onDispose
       }
@@ -187,7 +187,7 @@ test('PiAcpAgent: setSessionConfigOption auto-restores via pi session discovery 
         cwd: '/tmp/fallback-project',
         sessionPath: sessionFile,
         piCommand: process.env.PI_ACP_PI_COMMAND,
-        env: { PI_ACP_FS_SOCKET: undefined, PI_ACP_FS_CAPS: undefined },
+        env: { PI_ACP_FS_SOCKET: undefined, PI_ACP_FS_CAPS: undefined, PI_ACP_TERMINAL: undefined },
         appendSystemPrompt: undefined,
         onDispose: spawnCalls[0].onDispose
       }
