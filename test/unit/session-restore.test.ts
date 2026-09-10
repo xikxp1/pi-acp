@@ -69,6 +69,7 @@ test('PiAcpAgent: prompt auto-restores a missing session from SessionStore', asy
           sessionId,
           cwd: '/tmp/store-project',
           sessionFile: '/tmp/store-project/session.jsonl',
+          additionalDirectories: ['/tmp/lib'],
           updatedAt: new Date().toISOString()
         }
       },
@@ -89,18 +90,24 @@ test('PiAcpAgent: prompt auto-restores a missing session from SessionStore', asy
         cwd: '/tmp/store-project',
         sessionPath: '/tmp/store-project/session.jsonl',
         piCommand: process.env.PI_ACP_PI_COMMAND,
-        env: { PI_ACP_FS_SOCKET: undefined, PI_ACP_FS_CAPS: undefined, PI_ACP_TERMINAL: undefined },
-        appendSystemPrompt: undefined,
+        env: {
+          PI_ACP_FS_SOCKET: undefined,
+          PI_ACP_FS_CAPS: undefined,
+          PI_ACP_TERMINAL: undefined,
+          PI_ACP_ADDITIONAL_DIRECTORIES: '["/tmp/lib"]'
+        },
+        appendSystemPrompt: spawnCalls[0].appendSystemPrompt,
         onDispose: spawnCalls[0].onDispose
       }
     ])
+    assert.match(spawnCalls[0].appendSystemPrompt, /- \/tmp\/lib$/)
     assert.deepEqual(promptCalls, [{ message: 'hello again', images: [] }])
     assert.deepEqual(storeUpserts, [
       {
         sessionId: 'stored-session',
         cwd: '/tmp/store-project',
         sessionFile: '/tmp/store-project/session.jsonl',
-        additionalDirectories: []
+        additionalDirectories: ['/tmp/lib']
       }
     ])
   } finally {
@@ -187,7 +194,12 @@ test('PiAcpAgent: setSessionConfigOption auto-restores via pi session discovery 
         cwd: '/tmp/fallback-project',
         sessionPath: sessionFile,
         piCommand: process.env.PI_ACP_PI_COMMAND,
-        env: { PI_ACP_FS_SOCKET: undefined, PI_ACP_FS_CAPS: undefined, PI_ACP_TERMINAL: undefined },
+        env: {
+          PI_ACP_FS_SOCKET: undefined,
+          PI_ACP_FS_CAPS: undefined,
+          PI_ACP_TERMINAL: undefined,
+          PI_ACP_ADDITIONAL_DIRECTORIES: '[]'
+        },
         appendSystemPrompt: undefined,
         onDispose: spawnCalls[0].onDispose
       }

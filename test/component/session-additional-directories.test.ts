@@ -11,6 +11,7 @@ import {
   sameDirectories
 } from '../../src/acp/additional-directories.js'
 import { SessionStore } from '../../src/acp/session-store.js'
+import { SessionManager } from '../../src/acp/session.js'
 import { FakeAgentSideConnection, asAgentConn } from '../helpers/fakes.js'
 import { PiRpcProcess } from '../../src/pi-rpc/process.js'
 
@@ -43,6 +44,7 @@ test('SessionStore persists additionalDirectories and keeps them when omitted', 
   const store = new SessionStore(join(root, 'map.json'))
   store.upsert({ sessionId: 's', cwd: '/repo', sessionFile: '/f.jsonl', additionalDirectories: ['/a'] })
   assert.deepEqual(store.get('s')?.additionalDirectories, ['/a'])
+  assert.deepEqual(new SessionStore(join(root, 'map.json')).get('s')?.additionalDirectories, ['/a'])
   store.upsert({ sessionId: 's', cwd: '/repo', sessionFile: '/f.jsonl' })
   assert.deepEqual(store.get('s')?.additionalDirectories, ['/a'])
   store.upsert({ sessionId: 's', cwd: '/repo', sessionFile: '/f.jsonl', additionalDirectories: [] })
@@ -81,7 +83,30 @@ function fakeSpawn(spawned: any[]) {
   }
 }
 
-test('PiAcpAgent: initialize advertises additionalDirectories; new/load/fork pass roots to pi', async () => {
+test('new sessions expose and persist roots without requiring client filesystem capabilities', async t => {
+  const { root } = setupSessionsDir()
+  const oldEnv = process.env.PI_CODING_AGENT_DIR
+  process.env.PI_CODING_AGENT_DIR = root
+  const spawned: Parameters<typeof PiRpcProcess.spawn>[0][] = []
+  t.mock.method(PiRpcProcess, 'spawn', fakeSpawn(spawned))
+  const manager = new SessionManager()
+  try {
+    const session = await manager.create({
+      cwd: '/tmp/project',
+      mcpServers: [],
+      additionalDirectories: ['/tmp/lib'],
+      conn: asAgentConn(new FakeAgentSideConnection())
+    })
+    assert.equal(spawned[0].env?.PI_ACP_ADDITIONAL_DIRECTORIES, '["/tmp/lib"]')
+    assert.deepEqual(new SessionStore().get(session.sessionId)?.additionalDirectories, ['/tmp/lib'])
+  } finally {
+    manager.disposeAll()
+    if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR
+    else process.env.PI_CODING_AGENT_DIR = oldEnv
+  }
+})
+
+test('PiAcpAgent: initialize advertises additionalDirectories; load/fork pass roots to pi', async () => {
   const { root } = setupSessionsDir()
   const oldEnv = process.env.PI_CODING_AGENT_DIR
   process.env.PI_CODING_AGENT_DIR = root
@@ -105,6 +130,7 @@ test('PiAcpAgent: initialize advertises additionalDirectories; new/load/fork pas
     } as any)
     assert.equal(spawned.length, 1)
     assert.match(spawned[0].appendSystemPrompt, /- \/tmp\/lib$/)
+    assert.equal(spawned[0].env.PI_ACP_ADDITIONAL_DIRECTORIES, '["/tmp/lib"]')
     assert.doesNotMatch(spawned[0].appendSystemPrompt, /\/tmp\/project/)
 
     // session/list reports the stored roots.
@@ -120,12 +146,14 @@ test('PiAcpAgent: initialize advertises additionalDirectories; new/load/fork pas
     } as any)
     assert.equal(spawned.length, 2)
     assert.match(spawned[1].appendSystemPrompt, /- \/tmp\/other$/)
+    assert.equal(spawned[1].env.PI_ACP_ADDITIONAL_DIRECTORIES, '["/tmp/other"]')
     assert.ok(fork.sessionId)
 
-    // Without roots, no prompt addendum is passed.
+    // Without roots, no prompt addendum is passed and inherited roots are cleared.
     await agent.loadSession({ sessionId: 'sess-1', cwd: '/tmp/project', mcpServers: [] } as any)
     assert.equal(spawned.length, 3)
     assert.equal(spawned[2].appendSystemPrompt, undefined)
+    assert.equal(spawned[2].env.PI_ACP_ADDITIONAL_DIRECTORIES, '[]')
   } finally {
     PiRpcProcess.spawn = originalSpawn
     if (oldEnv === undefined) delete process.env.PI_CODING_AGENT_DIR
@@ -157,6 +185,7 @@ test('PiAcpAgent: resume reuses the process for same roots and restarts pi when 
     await resume(['/tmp/lib', '/tmp/extra'])
     assert.equal(spawned.length, 2)
     assert.match(spawned[1].appendSystemPrompt, /- \/tmp\/lib\n- \/tmp\/extra$/)
+    assert.equal(spawned[1].env.PI_ACP_ADDITIONAL_DIRECTORIES, '["/tmp/lib","/tmp/extra"]')
 
     // Omitting the field means "no roots" per spec and therefore restarts again.
     await resume()

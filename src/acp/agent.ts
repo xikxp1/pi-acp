@@ -227,7 +227,7 @@ export class PiAcpAgent implements ACPAgent {
           cwd,
           sessionPath: stored.sessionFile,
           piCommand: process.env.PI_ACP_PI_COMMAND,
-          env: clientBridgeEnv(bridge),
+          env: clientBridgeEnv(bridge, additionalDirectories),
           appendSystemPrompt: additionalDirectoriesSystemPrompt(additionalDirectories),
           onDispose: () => bridge?.close()
         })

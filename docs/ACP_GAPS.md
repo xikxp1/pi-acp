@@ -33,7 +33,7 @@ extension `confirm`/`select` UI requests.
 | 9   | Client terminals (`terminal/*`)                       | Stable                          | Supported via companion `pi-acp-terminal` | Real client terminals with stop control; `_meta` emulation as fallback | Implemented              |
 | 10  | StopReason fidelity                                   | Stable                          | Implemented                               | Failed turns surface as errors; `length` → `max_tokens`                | Implemented              |
 | 11  | MCP servers                                           | Stable (+ unstable `acp` proxy) | Accepted, ignored                         | Medium — Zed-configured MCP servers silently dropped                   | Hard (pi has no MCP)     |
-| 12  | `additionalDirectories`                               | Stable                          | Implemented (system prompt)               | Multi-root worktrees visible to pi as extra roots                      | Implemented              |
+| 12  | `additionalDirectories`                               | Stable                          | Implemented (prompt + FS tools)           | Multi-root worktrees visible to pi as extra roots                      | Implemented              |
 | 13  | `session/load` replay fidelity                        | Stable                          | Implemented                               | Titles, locations, diffs, thinking, images replayed                    | Implemented              |
 | 14  | Elicitation (`elicitation/create`)                    | Unstable                        | Implemented (form mode)                   | pi `input`/`editor` UI requests render as forms                        | Implemented              |
 | 15  | ACP v2 / `auth/login`                                 | Emerging                        | v1 only, terminal-login out-of-band       | Low today                                                              | Track                    |
@@ -158,7 +158,7 @@ the limitation prominently, or build an MCP→pi-tool bridge extension (large ef
 SDK also has an unstable client-proxied MCP transport (`mcpCapabilities.acp`,
 `mcp/connect`) which doesn't change pi's side of the problem.
 
-### 12. `additionalDirectories` — RESOLVED (system prompt)
+### 12. `additionalDirectories` - RESOLVED (prompt + FS tools)
 
 The adapter advertises `sessionCapabilities.additionalDirectories` and accepts the field
 on `session/new`, `session/load`, `session/resume`, and `session/fork`
@@ -170,9 +170,13 @@ reported back in `session/list` `SessionInfo.additionalDirectories`.
 
 Per spec, each request's list is authoritative (omitting it means no roots). A running
 pi cannot change its system prompt, so a warm `session/resume` whose list differs from
-the active session restarts the pi process; identical lists reuse it. pi's own tools
-still resolve relative paths against `cwd` only - the model is told to use absolute
-paths for the extra roots.
+the active session restarts the pi process; identical lists reuse it. Roots are also
+passed as `PI_ACP_ADDITIONAL_DIRECTORIES` (JSON) to every session subprocess, including
+auto-restores from the store. The companion `pi-acp-fs` extension resolves `read`, `edit`,
+and `write` paths cwd-first, then against a unique extra-root match, and rejects ambiguity.
+Root-basename prefixes support explicit targeting and new files; unqualified new files
+stay under cwd. This also works locally without client FS capabilities. Other tools (or
+sessions without the extension) still require absolute paths for extra roots.
 
 ### 13. `session/load` replay fidelity — RESOLVED
 

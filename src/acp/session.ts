@@ -196,7 +196,7 @@ export class SessionManager {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
         piCommand: params.piCommand,
-        env: clientBridgeEnv(bridge),
+        env: clientBridgeEnv(bridge, params.additionalDirectories),
         appendSystemPrompt: additionalDirectoriesSystemPrompt(params.additionalDirectories ?? []),
         onDispose: () => bridge?.close()
       })

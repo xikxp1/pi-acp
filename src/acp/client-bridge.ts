@@ -252,7 +252,13 @@ export function truncatedOutputDelta(sent: string, next: string): string {
   return next
 }
 
-export function clientBridgeEnv(bridge: ClientBridge | undefined): NodeJS.ProcessEnv {
-  // Do not inherit a parent adapter's session socket when running nested pi processes.
-  return bridge?.env ?? { PI_ACP_FS_SOCKET: undefined, PI_ACP_FS_CAPS: undefined, PI_ACP_TERMINAL: undefined }
+export function clientBridgeEnv(
+  bridge: ClientBridge | undefined,
+  additionalDirectories: readonly string[] = []
+): NodeJS.ProcessEnv {
+  // Do not inherit a parent adapter's session socket or roots in nested pi processes.
+  return {
+    ...(bridge?.env ?? { PI_ACP_FS_SOCKET: undefined, PI_ACP_FS_CAPS: undefined, PI_ACP_TERMINAL: undefined }),
+    PI_ACP_ADDITIONAL_DIRECTORIES: JSON.stringify(additionalDirectories)
+  }
 }

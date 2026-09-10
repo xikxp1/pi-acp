@@ -26,7 +26,9 @@ export function additionalDirectoriesSystemPrompt(dirs: readonly string[]): stri
   if (!dirs.length) return undefined
   return [
     'Additional workspace roots are part of this session besides the working directory.',
-    'Treat them as in scope: read, search, and edit files under them using absolute paths.',
+    'Treat them as in scope. With pi-acp-fs, read/edit/write resolve relative paths in the working directory first, then a unique matching extra root.',
+    'Use root-name/path to target an extra root (including new files); ambiguous roots require an absolute path. Unqualified new files stay in the working directory.',
+    'Other tools, or sessions without pi-acp-fs, must use absolute paths for extra roots.',
     ...dirs.map(dir => `- ${dir}`)
   ].join('\n')
 }

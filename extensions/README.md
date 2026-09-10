@@ -7,9 +7,19 @@ mkdir -p ~/.pi/agent/extensions
 cp /Users/xikxp1/Projects/pi-acp/extensions/pi-acp-fs.ts ~/.pi/agent/extensions/pi-acp-fs.ts
 ```
 
-Restart the ACP session after installation. Re-copy after updates. The extension is inert without `PI_ACP_FS_SOCKET`, so normal TUI pi is unchanged. Avoid other extensions overriding the same tools.
+Restart the ACP session after installation. Re-copy after updates. The extension is inert without `PI_ACP_FS_SOCKET` or nonempty `PI_ACP_ADDITIONAL_DIRECTORIES`, so normal TUI pi is unchanged. Avoid other extensions overriding the same tools.
 
 The adapter creates a session-local NDJSON socket (Unix socket on POSIX, named pipe on Windows) and sets `PI_ACP_FS_SOCKET` and `PI_ACP_FS_CAPS` only for advertised client capabilities. `read` needs read capability, `write` needs write capability, and `edit` needs both. UUID-correlated requests support concurrent operations and a 30-second timeout. Client errors, timeouts, and socket failures fall back to local disk. Image detection and directory creation stay local; bash and other tools still use disk. This is not a filesystem permission boundary. A timed-out write may still complete at the client after local fallback.
+
+## Additional workspace roots
+
+The adapter persists `additionalDirectories` in its session store and passes the current roots to pi as a JSON array in `PI_ACP_ADDITIONAL_DIRECTORIES`. Auto-restored sessions receive the stored roots; explicit new/load/resume/fork requests use their own list (omission clears it). With extra roots, this extension registers `read`, `edit`, and `write` even without client FS capabilities, using local operations where delegation is unavailable.
+
+- Existing cwd-relative paths win. Otherwise an existing path under exactly one extra root is selected, including files available only through the client filesystem.
+- Multiple extra-root matches fail with an ambiguity error instead of reading or changing an arbitrary file.
+- `root-name/path` selects an extra root by its directory basename and supports creating files there. Existing cwd paths still take precedence; duplicate root names require absolute paths.
+- Unqualified new files are created under cwd. Absolute paths, `~/` paths, and paths containing `..` keep their normal meaning and are not searched across roots.
+- Resolution happens once before the built-in tool executes, so reads, image detection, edits, directory creation, and writes use the same target. Bash/search tools are unchanged and need absolute paths for extra roots.
 
 # Client terminal delegation extension
 
