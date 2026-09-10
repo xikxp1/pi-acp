@@ -39,6 +39,7 @@ extension `confirm`/`select` UI requests.
 | 15  | ACP v2 / `auth/login`                                 | Emerging                        | v1 only, terminal-login out-of-band | Low today                                                   | Track                      |
 | 16  | Tool kind/title polish                                | Stable                          | Implemented                         | Search/fetch/think icons; `name arg` titles                 | Implemented                |
 | 17  | NES, providers, document sync                         | Unstable                        | Missing                             | Low — very new, unclear Zed adoption                        | Track                      |
+| 18  | Native subagent sessions                              | Draft RFD (open)                | Tool-card fallback via extension    | Medium — child transcripts as navigable sessions            | Blocked upstream (track)   |
 
 ## Details
 
@@ -219,6 +220,51 @@ suggestions, `nes/*`), provider management (`providers/*`), and editor document-
 notifications (`document/didOpen` etc.). Revisit once stabilized or once Zed adopts
 them for external agents.
 
+### 18. Native subagent sessions — BLOCKED UPSTREAM (track)
+
+Today subagent output is display-only: the companion `pi-acp-subagents` extension renders
+`@tintinweb/pi-subagents` runs as expandable tool cards (`src/acp/translate/subagents.ts`).
+There is no parent/child session linkage, no per-child permission routing, and no
+replay of live cards on `session/load`.
+
+Upstream state (checked 2026-09-11):
+
+- ACP draft RFD [agent-client-protocol#1992](https://github.com/agentclientprotocol/agent-client-protocol/pull/1992)
+  (open, ~15 unresolved review threads). Shape: bilateral negotiation
+  (`clientCapabilities.subagents: {}` ↔ `sessionCapabilities.subagents: {}`),
+  `subagent_spawned` on the parent before any child output, child updates streamed under
+  the child `sessionId`, one terminal `subagent_state_update` on the parent, child tree
+  reconstruction on `session/load` (orphans → `disconnected`). Open questions from the
+  maintainer: collapse the two notifications into a single upsert-style `subagent_update`
+  (v2 pattern), drop redundant `subagentSessionId`, whether child `cancel`/`close`
+  capabilities are needed, cwd/MCP/capability inheritance, and splitting the RFD from the
+  schema PR. Two underspecified edge cases: client state on disconnect without a terminal
+  update, and pending permission/elicitation requests on a cancelled child.
+- Older draft [agent-client-protocol#855](https://github.com/agentclientprotocol/agent-client-protocol/pull/855)
+  is stalled and effectively superseded; [discussion #690](https://github.com/orgs/agentclientprotocol/discussions/690)
+  (`ToolKind: subagent`) has no decision.
+- Reference implementations: [codex-acp#419](https://github.com/agentclientprotocol/codex-acp/pull/419)
+  ([docs](https://github.com/agentclientprotocol/codex-acp/blob/main/docs/subagent-sessions.md)) and
+  [claude-agent-acp#1017](https://github.com/agentclientprotocol/claude-agent-acp/pull/1017).
+  Both keep a legacy tool-call fallback when the capability is not negotiated.
+- SDK: released `@agentclientprotocol/sdk` (0.26.0) strips the draft `subagents` fields.
+  JetBrains AIR bridges this with `_meta.jetbrains.air.capabilities = ["nativeSubagentSessions"]`.
+- Zed: `client_capabilities_for_agent` (`crates/agent_servers/src/acp.rs`) advertises no
+  `subagents` capability. The `subagent_session_info` `_meta` key and
+  `tool_call_for_subagent` navigation in `crates/acp_thread` serve Zed's native
+  `spawn_agent` tool only, not external ACP agents. Demand tracked in
+  [zed#49452](https://github.com/zed-industries/zed/discussions/49452),
+  [zed#54602](https://github.com/zed-industries/zed/issues/54602),
+  [zed#55809](https://github.com/zed-industries/zed/issues/55809).
+- pi side: `@tintinweb/pi-subagents` exposes lifecycle events for top-level launches and
+  background resumes only; workflow-owned and nested children are excluded. Per-child
+  permission routing would also need child `confirm`/`select` requests surfaced.
+
+Waiting on, in order: RFD acceptance → SDK exposing the fields → Zed sending the client
+capability. Plan when unblocked: keep the tool-card fallback and add an opt-in native path
+gated on `clientCapabilities.subagents` (mirroring codex-acp). Hold until the
+single-vs-two-notification question is settled, as that is the part most likely to change.
+
 ## Known Zed-specific quirks (not protocol gaps)
 
 - Queued-prompt notices are emitted as chat text plus `session_info_update._meta`
@@ -232,3 +278,5 @@ them for external agents.
 
 1. Permission gating & terminal delegation - start upstream conversations with pi;
    these are the biggest UX gaps but need pi-side hooks.
+2. Native subagent sessions - no action until ACP RFD #1992 lands and Zed advertises the
+   capability; re-check quarterly.
