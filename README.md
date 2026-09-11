@@ -200,13 +200,19 @@ Project layout:
 - `src/acp/*` – ACP server + translation layer
 - `src/pi-rpc/*` – pi subprocess wrapper (RPC protocol)
 
+## Prompt queues and background work
+
+New prompts wait in FIFO order until Pi fully settles, including retries, compaction, and autonomous continuations started by extension or subagent notifications. They do not steer the active run. The adapter reports background activity in the transcript and publishes queue depth/running metadata; Zed may not show its normal busy indicator outside an active `session/prompt` request.
+
+Cancellation clears the adapter's queued prompts and aborts Pi's current run. Messages submitted after cancellation wait for the abort to finish before starting. Independently running background subagents are not stopped by this queue handling and may trigger later continuations.
+
 ## Limitations
 
 - Live subagent cards require the companion extension and a compatible `@tintinweb/pi-subagents` installation. Workflow-owned/nested agents and Zed's native child-session navigation are not supported. Live transcripts are display-only; session reload replays stored completion messages, not the live cards.
 - ACP filesystem (`fs/*`) and terminal (`terminal/*`) delegation require the companion `pi-acp-fs` / `pi-acp-terminal` extensions (see [extensions/README.md](extensions/README.md)). Without them pi reads/writes and executes locally, and bash output is rendered through Zed's display-only terminal emulation.
 - MCP servers are accepted in ACP params and stored in session state, but not wired through to pi in this adapter. If you use [pi MCP adapter](https://github.com/nicobailon/pi-mcp-adapter) it will be available in the ACP client.
 - Assistant streaming is currently sent as `agent_message_chunk` (no separate thought stream).
-- Queue is implemented client-side and should work like pi's `one-at-a-time`
+- Prompt queuing is implemented in the adapter, independently of pi's steering/follow-up queues (see [Prompt queues and background work](#prompt-queues-and-background-work)).
 - ~~ACP clients don't yet suport session history, but ACP sessions from `pi-acp` can be `/resume`d in pi directly~~
 
 ## License

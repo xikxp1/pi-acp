@@ -14,6 +14,21 @@ export class PiRpcSpawnError extends Error {
   }
 }
 
+export class PiRpcPromptBusyError extends Error {
+  constructor(
+    message: string,
+    readonly activity: 'agent' | 'compaction'
+  ) {
+    super(`pi prompt failed: ${message}`)
+    this.name = 'PiRpcPromptBusyError'
+  }
+}
+
+const PROMPT_BUSY_ERRORS = new Map<string, 'agent' | 'compaction'>([
+  ["Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.", 'agent'],
+  ['Cannot submit a prompt while compaction is in progress. Wait for compaction to finish and retry.', 'compaction']
+])
+
 const ESC = String.fromCharCode(0x1b)
 const CSI = String.fromCharCode(0x9b)
 
@@ -255,7 +270,11 @@ export class PiRpcProcess {
 
   async prompt(message: string, images: unknown[] = []): Promise<void> {
     const res = await this.request({ type: 'prompt', message, images })
-    if (!res.success) throw new Error(`pi prompt failed: ${res.error ?? JSON.stringify(res.data)}`)
+    if (!res.success) {
+      const activity = res.error && PROMPT_BUSY_ERRORS.get(res.error)
+      if (activity) throw new PiRpcPromptBusyError(res.error!, activity)
+      throw new Error(`pi prompt failed: ${res.error ?? JSON.stringify(res.data)}`)
+    }
   }
 
   async abort(): Promise<void> {
@@ -263,8 +282,8 @@ export class PiRpcProcess {
     if (!res.success) throw new Error(`pi abort failed: ${res.error ?? JSON.stringify(res.data)}`)
   }
 
-  async getState(): Promise<unknown> {
-    const res = await this.request({ type: 'get_state' })
+  async getState(timeoutMs?: number): Promise<unknown> {
+    const res = await this.request({ type: 'get_state' }, timeoutMs)
     if (!res.success) throw new Error(`pi get_state failed: ${res.error ?? JSON.stringify(res.data)}`)
     return res.data
   }

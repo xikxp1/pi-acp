@@ -11,7 +11,7 @@ import type {
 import { RequestError } from '@agentclientprotocol/sdk'
 import { readFileSync } from 'node:fs'
 import { isAbsolute, resolve as resolvePath } from 'node:path'
-import { PiRpcProcess, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/process.js'
+import { PiRpcProcess, PiRpcPromptBusyError, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/process.js'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { SessionStore } from './session-store.js'
 import { ClientBridge, clientBridgeEnv, type ClientCapabilities } from './client-bridge.js'
@@ -81,7 +81,8 @@ function errorMessageOf(err: unknown): string {
 type PendingTurn = {
   extensionCommand?: boolean
   promptResponded?: boolean
-  agentUnsettled?: boolean
+  settled?: boolean
+  cancelled?: boolean
   onUsage?: (usage: Usage) => void
   resolve: (reason: StopReason) => void
   reject: (err: unknown) => void
@@ -282,7 +283,13 @@ export class PiAcpSession {
   private contextWindow: number | undefined
   private lastUsageUsed: number | undefined
   private lastUsageAt = -Infinity
-  private settling = false
+  private settling: object | undefined
+  private reconciling: object | undefined
+  private aborting: Promise<void> | undefined
+  private abortPending = false
+  private agentVersion = 0
+  private compactionVersion = 0
+  private lastActivity: string | undefined
   // Final stop reason / error of the last assistant message in the current turn.
   private turnOutcome: TurnOutcome = {}
   private retryFailure: string | undefined
@@ -321,7 +328,9 @@ export class PiAcpSession {
   // pi can emit multiple `turn_end` and `agent_end` events for a single user prompt
   // when retry, compaction, or queued continuations run. The session-level prompt
   // completes only when `agent_settled` is emitted.
-  private inAgentLoop = false
+  // Extensions can start runs without an ACP prompt owning them.
+  private agentUnsettled = false
+  private compacting = false
 
   // For ACP diff support: capture file contents before edit/write mutations,
   // then emit ToolCallContent {type:"diff"}. Compatible structured edit/write
@@ -374,23 +383,25 @@ export class PiAcpSession {
     const turns: PendingTurn[] = this.turnQueue.splice(0)
     if (this.pendingTurn) turns.unshift(this.pendingTurn)
     this.pendingTurn = null
-    this.inAgentLoop = false
-    this.settling = false
+    this.settling = undefined
     const authError = maybeAuthRequiredError(error)
     for (const turn of turns) {
       if (authError) turn.reject(authError)
-      else if (this.cancelRequested) turn.resolve('cancelled')
+      else if (turn.cancelled) turn.resolve('cancelled')
       else turn.reject(new PiTurnError(errorMessageOf(error)))
     }
-    this.emit({
-      sessionUpdate: 'session_info_update',
-      _meta: { piAcp: { queueDepth: 0, running: false } }
-    })
+    this.publishActivity()
   }
 
   private handleFailure(error: Error): void {
     if (this.terminalError) return
     this.terminalError = error
+    this.agentUnsettled = false
+    this.compacting = false
+    this.reconciling = undefined
+    this.aborting = undefined
+    this.abortPending = false
+    this.invalidateSettlement()
     this.unsubscribeEvents?.()
     this.unsubscribeFailure?.()
     this.unsubscribeEvents = undefined
@@ -434,9 +445,10 @@ export class PiAcpSession {
     }
   }
 
-  async reportUsage(): Promise<Usage | undefined> {
+  async reportUsage(isCurrent: () => boolean = () => true): Promise<Usage | undefined> {
     try {
       const stats = await this.proc.getSessionStats()
+      if (!isCurrent()) return undefined
       const update = sessionStatsUsageUpdate(stats)
       if (update) this.emit({ sessionUpdate: 'usage_update', ...update })
       await this.flushEmits()
@@ -469,12 +481,8 @@ export class PiAcpSession {
     const turnPromise = new Promise<StopReason>((resolve, reject) => {
       const queued: QueuedTurn = { message: expandedMessage, images, resolve, reject, onUsage, extensionCommand }
 
-      // If a turn is already running, enqueue.
-      if (this.pendingTurn) {
-        this.turnQueue.push(queued)
-
-        // Best-effort: notify client that a prompt was queued.
-        // This doesn't work in Zed yet, needs to be revisited
+      this.turnQueue.push(queued)
+      if (this.pendingTurn || this.piBusy || this.aborting || this.reconciling) {
         this.emit({
           sessionUpdate: 'agent_message_chunk',
           content: {
@@ -482,19 +490,9 @@ export class PiAcpSession {
             text: `Queued message (position ${this.turnQueue.length}).`
           }
         })
-
-        // Also publish queue depth via session info metadata.
-        // This also not visible in the client
-        this.emit({
-          sessionUpdate: 'session_info_update',
-          _meta: { piAcp: { queueDepth: this.turnQueue.length, running: true } }
-        })
-
-        return
       }
-
-      // No turn is running; start immediately.
-      this.startTurn(queued)
+      this.advanceQueue()
+      this.publishActivity()
     })
 
     return turnPromise
@@ -504,6 +502,8 @@ export class PiAcpSession {
     if (this.terminalError) return
     // Cancel current and clear any queued prompts.
     this.cancelRequested = true
+    this.settling = undefined
+    if (this.pendingTurn) this.pendingTurn.cancelled = true
 
     if (this.turnQueue.length) {
       const queued = this.turnQueue.splice(0, this.turnQueue.length)
@@ -513,14 +513,9 @@ export class PiAcpSession {
         sessionUpdate: 'agent_message_chunk',
         content: { type: 'text', text: 'Cleared queued prompts.' }
       })
-      this.emit({
-        sessionUpdate: 'session_info_update',
-        _meta: { piAcp: { queueDepth: 0, running: Boolean(this.pendingTurn) } }
-      })
     }
 
-    // Abort the currently running turn (if any). If nothing is running, this is a no-op.
-    await this.proc.abort()
+    await this.abortCurrent()
   }
 
   noteTitle(title: string): void {
@@ -657,13 +652,147 @@ export class PiAcpSession {
     this.clientTerminals.delete(toolCallId)
   }
 
+  private get piBusy(): boolean {
+    return this.agentUnsettled || this.compacting
+  }
+
+  private publishActivity(): void {
+    const activity = {
+      queueDepth: this.turnQueue.length,
+      running: !this.terminalError && Boolean(this.piBusy || this.pendingTurn || this.aborting || this.reconciling)
+    }
+    const key = JSON.stringify(activity)
+    if (key === this.lastActivity) return
+    this.lastActivity = key
+    this.emit({ sessionUpdate: 'session_info_update', _meta: { piAcp: activity } })
+  }
+
+  private invalidateSettlement(): void {
+    this.settling = undefined
+  }
+
+  private abortCurrent(repeat = false): Promise<void> {
+    if (this.aborting && !repeat) return this.aborting
+    // Install the barrier before abort can emit a settlement event.
+    this.abortPending = true
+    const abort = (this.aborting ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => {
+        this.abortPending = false
+        if (!this.terminalError) return this.proc.abort()
+      })
+    this.aborting = abort
+    void abort
+      .finally(() => {
+        if (this.aborting !== abort) return
+        this.aborting = undefined
+        this.advanceQueue()
+        this.publishActivity()
+      })
+      .catch(() => {})
+    this.publishActivity()
+    return abort
+  }
+
+  private advanceQueue(): void {
+    if (this.terminalError || this.piBusy || this.aborting || this.reconciling) return
+    if (this.pendingTurn) {
+      this.finishTurnIfSettled()
+      return
+    }
+    const next = this.turnQueue.shift()
+    if (next) this.startTurn(next)
+  }
+
+  private finishTurnIfSettled(): void {
+    const turn = this.pendingTurn
+    if (
+      !turn ||
+      !turn.promptResponded ||
+      (!turn.settled && !turn.extensionCommand) ||
+      this.terminalError ||
+      this.piBusy ||
+      this.aborting ||
+      this.reconciling ||
+      this.settling
+    )
+      return
+
+    const token = (this.settling = {})
+    const current = () => !this.terminalError && this.pendingTurn === turn && this.settling === token
+    void this.reportUsage(current)
+      .then(async usage => {
+        if (!current()) return
+        await this.flushEmits()
+        if (!current() || this.piBusy || this.aborting || this.reconciling) return
+        if (usage) turn.onUsage?.(usage)
+        const failure = this.cancelRequested ? undefined : this.turnFailure()
+        if (failure) turn.reject(new PiTurnError(failure))
+        else turn.resolve(this.resolvedStopReason())
+        this.pendingTurn = null
+        this.settling = undefined
+        this.advanceQueue()
+        this.publishActivity()
+      })
+      .catch(error => {
+        if (current()) this.failTurns(error)
+      })
+  }
+
+  private requeueBusyTurn(queued: QueuedTurn, turn: PendingTurn, activity: 'agent' | 'compaction'): void {
+    this.pendingTurn = null
+    this.invalidateSettlement()
+    if (turn.cancelled) turn.resolve('cancelled')
+    else {
+      this.turnQueue.unshift(queued)
+      this.emit({
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'text', text: 'Pi is still working; queued your message until it finishes.' }
+      })
+    }
+
+    // A run may have started between our idle check and Pi's prompt preflight.
+    // Its settled event may also already have arrived before this rejection.
+    if (activity === 'agent') this.agentUnsettled = true
+    else this.compacting = true
+    const agentVersion = this.agentVersion
+    const compactionVersion = this.compactionVersion
+    const token = (this.reconciling = {})
+    this.publishActivity()
+    void this.proc
+      .getState(5000)
+      .then(state => {
+        if (this.terminalError || this.reconciling !== token) return
+        const snapshot = state as { isStreaming?: unknown; isCompacting?: unknown } | null
+        // A compaction event does not supersede the agent's streaming state, or vice versa.
+        if (this.agentVersion === agentVersion) {
+          if (typeof snapshot?.isStreaming !== 'boolean') throw new Error('pi returned an invalid streaming state')
+          this.agentUnsettled = snapshot.isStreaming
+        }
+        if (this.compactionVersion === compactionVersion) {
+          if (typeof snapshot?.isCompacting !== 'boolean') throw new Error('pi returned an invalid compaction state')
+          this.compacting = snapshot.isCompacting
+        }
+      })
+      .catch(error => {
+        const superseded =
+          activity === 'agent' ? this.agentVersion !== agentVersion : this.compactionVersion !== compactionVersion
+        if (!this.terminalError && this.reconciling === token && !superseded) this.failTurns(error)
+      })
+      .finally(() => {
+        if (this.terminalError || this.reconciling !== token) return
+        this.reconciling = undefined
+        this.advanceQueue()
+        this.publishActivity()
+      })
+  }
+
   private startTurn(t: QueuedTurn): void {
     this.cancelRequested = false
-    this.inAgentLoop = false
 
     this.lastUsageUsed = undefined
     this.lastUsageAt = -Infinity
-    this.settling = false
+    this.invalidateSettlement()
     this.turnOutcome = {}
     this.retryFailure = undefined
     const turn: PendingTurn = (this.pendingTurn = {
@@ -673,23 +802,27 @@ export class PiAcpSession {
       extensionCommand: t.extensionCommand
     })
 
-    // Publish queue depth (0 because we're starting the turn now).
-    this.emit({
-      sessionUpdate: 'session_info_update',
-      _meta: { piAcp: { queueDepth: this.turnQueue.length, running: true } }
-    })
+    this.publishActivity()
 
-    // Extension handlers can return without starting an agent run.
     this.proc
       .prompt(t.message, t.images)
       .then(() => {
-        if (this.terminalError || this.pendingTurn !== turn || !turn.extensionCommand) return
+        if (this.terminalError || this.pendingTurn !== turn) return
         turn.promptResponded = true
-        if (!turn.agentUnsettled) this.handlePiEvent({ type: 'agent_settled' })
+        // A slow prompt preflight can accept after the original abort was sent.
+        if (turn.cancelled && !this.abortPending) {
+          void this.abortCurrent(true).catch(error => {
+            if (!this.terminalError && this.pendingTurn === turn) this.failTurns(error)
+          })
+        }
+        this.finishTurnIfSettled()
       })
       .catch(err => {
-        // If the subprocess errors before we get `agent_settled`, treat as error unless cancelled.
-        // Also ensure we flush any already-enqueued updates first.
+        if (this.terminalError || this.pendingTurn !== turn) return
+        if (err instanceof PiRpcPromptBusyError) {
+          this.requeueBusyTurn(t, turn, err.activity)
+          return
+        }
         const finish = () => {
           if (this.terminalError || this.pendingTurn !== turn) return
           this.failTurns(err)
@@ -1038,7 +1171,12 @@ export class PiAcpSession {
         break
       }
 
+      case 'compaction_start':
       case 'auto_compaction_start': {
+        this.compacting = true
+        this.compactionVersion++
+        this.invalidateSettlement()
+        this.publishActivity()
         this.emit({
           sessionUpdate: 'agent_message_chunk',
           content: {
@@ -1049,7 +1187,11 @@ export class PiAcpSession {
         break
       }
 
+      case 'compaction_end':
       case 'auto_compaction_end': {
+        this.compacting = false
+        this.compactionVersion++
+        this.invalidateSettlement()
         this.emit({
           sessionUpdate: 'agent_message_chunk',
           content: {
@@ -1057,12 +1199,27 @@ export class PiAcpSession {
             text: 'Automatic compaction finished; context was summarized to continue the session.'
           } satisfies ContentBlock
         })
+        this.advanceQueue()
+        this.publishActivity()
         break
       }
 
       case 'agent_start': {
-        if (this.pendingTurn) this.pendingTurn.agentUnsettled = true
-        this.inAgentLoop = true
+        const autonomous = !this.pendingTurn && !this.agentUnsettled
+        this.agentUnsettled = true
+        this.agentVersion++
+        this.invalidateSettlement()
+        if (this.pendingTurn) this.pendingTurn.settled = false
+        else if (autonomous) {
+          this.turnOutcome = {}
+          this.retryFailure = undefined
+          if (!this.aborting) this.cancelRequested = false
+          this.emit({
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'Pi resumed work after a background update.' }
+          })
+        }
+        this.publishActivity()
         break
       }
 
@@ -1075,46 +1232,23 @@ export class PiAcpSession {
       case 'agent_end': {
         // One low-level run ended. Pi may still retry, compact, or process a queued
         // continuation, so keep the ACP turn open until `agent_settled`.
-        this.inAgentLoop = false
         break
       }
 
       case 'agent_settled': {
-        if (this.pendingTurn) this.pendingTurn.agentUnsettled = false
-        if (this.pendingTurn?.extensionCommand && !this.pendingTurn.promptResponded) break
-        if (!this.pendingTurn || this.settling) break
-        this.settling = true
-        const turn = this.pendingTurn
-        void this.reportUsage()
-          .then(async usage => {
-            if (this.terminalError || this.pendingTurn !== turn) return
-            if (usage) turn.onUsage?.(usage)
-            await this.flushEmits()
-            if (this.terminalError || this.pendingTurn !== turn) return
-            const failure = this.cancelRequested ? undefined : this.turnFailure()
-            if (failure) turn.reject(new PiTurnError(failure))
-            else turn.resolve(this.resolvedStopReason())
-            this.pendingTurn = null
-            this.inAgentLoop = false
-
-            // Start next queued prompt, if any.
-            const next = this.turnQueue.shift()
-            if (next) {
-              this.emit({
-                sessionUpdate: 'agent_message_chunk',
-                content: { type: 'text', text: `Starting queued message. (${this.turnQueue.length} remaining)` }
-              })
-              this.startTurn(next)
-            } else {
-              this.emit({
-                sessionUpdate: 'session_info_update',
-                _meta: { piAcp: { queueDepth: 0, running: false } }
-              })
-            }
+        const autonomous = !this.pendingTurn && this.agentUnsettled
+        this.agentUnsettled = false
+        this.agentVersion++
+        this.invalidateSettlement()
+        if (this.pendingTurn) this.pendingTurn.settled = true
+        else if (autonomous) {
+          this.emit({
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'Background work finished.' }
           })
-          .catch(error => {
-            if (!this.terminalError && this.pendingTurn === turn) this.failTurns(error)
-          })
+        }
+        this.advanceQueue()
+        this.publishActivity()
         break
       }
 

@@ -3,11 +3,11 @@ import assert from 'node:assert/strict'
 import { PiAcpSession, PiTurnError } from '../../src/acp/session.js'
 import type { PiRpcProcess } from '../../src/pi-rpc/process.js'
 import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpers/fakes.js'
-import { bounded, nextTick } from '../helpers/rpc-child.js'
+import { bounded, deferred, nextTick } from '../helpers/rpc-child.js'
 
 function setup() {
   const proc = new FakePiRpcProcess()
-  const response = Promise.withResolvers<void>()
+  const response = deferred<void>()
   proc.prompt = async (message, attachments = []) => {
     proc.prompts.push({ message, attachments })
     await response.promise

@@ -573,8 +573,12 @@ test('PiAcpSession: emits agent_message_chunk for auto_compaction_start', async 
 
   await new Promise(r => setTimeout(r, 0))
 
-  assert.equal(conn.updates.length, 1)
+  assert.equal(conn.updates.length, 2)
   assert.deepEqual(conn.updates[0]!.update, {
+    sessionUpdate: 'session_info_update',
+    _meta: { piAcp: { queueDepth: 0, running: true } }
+  })
+  assert.deepEqual(conn.updates[1]!.update, {
     sessionUpdate: 'agent_message_chunk',
     content: { type: 'text', text: 'Context nearing limit, running automatic compaction...' }
   })
@@ -597,7 +601,11 @@ test('PiAcpSession: emits agent_message_chunk for auto_compaction_end', async ()
 
   await new Promise(r => setTimeout(r, 0))
 
-  assert.equal(conn.updates.length, 1)
+  assert.equal(conn.updates.length, 2)
+  assert.deepEqual(conn.updates[1]!.update, {
+    sessionUpdate: 'session_info_update',
+    _meta: { piAcp: { queueDepth: 0, running: false } }
+  })
   assert.deepEqual(conn.updates[0]!.update, {
     sessionUpdate: 'agent_message_chunk',
     content: {

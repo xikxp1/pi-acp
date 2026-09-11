@@ -169,7 +169,7 @@ test('PiAcpSession: acknowledged turns wait for agent_settled and then advance t
   assert.equal(await bounded(second), 'cancelled')
 })
 
-test('PiAcpSession: late prompt rejection cannot settle a newer turn', async t => {
+test('PiAcpSession: settlement before acknowledgement cannot hide a prompt rejection', async t => {
   const rpc = createRpcChild({ respond: command => command.type !== 'prompt' || command.message !== 'one' })
   t.after(rpc.cleanup)
   const session = new PiAcpSession({
@@ -179,19 +179,23 @@ test('PiAcpSession: late prompt rejection cannot settle a newer turn', async t =
     proc: rpc.proc,
     conn: asAgentConn(new FakeAgentSideConnection())
   })
-  const first = session.prompt('one')
-  let secondSettled = false
-  const second = session.prompt('two').then(reason => {
-    secondSettled = true
+  let firstSettled = false
+  const first = outcome(session.prompt('one')).then(reason => {
+    firstSettled = true
     return reason
   })
+  const second = outcome(session.prompt('two'))
   rpc.send({ type: 'agent_settled' })
-  assert.equal(await bounded(first), 'end_turn')
+  await bounded(nextTick())
+  assert.equal(firstSettled, false)
+  assert.equal(rpc.commands.filter(c => c.type === 'prompt').length, 1)
   const firstCommand = rpc.commands.find(c => c.type === 'prompt' && c.message === 'one')
   assert.ok(firstCommand)
   rpc.respond(firstCommand, false)
-  await nextTick()
-  assert.equal(secondSettled, false)
+  assert.deepEqual(await bounded(Promise.all([first, second])), ['error', 'error'])
+
+  const third = session.prompt('three')
+  rpc.respond(firstCommand, false)
   rpc.send({ type: 'agent_settled' })
-  assert.equal(await bounded(second), 'end_turn')
+  assert.equal(await bounded(third), 'end_turn')
 })

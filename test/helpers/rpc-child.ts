@@ -4,7 +4,7 @@ import { PassThrough } from 'node:stream'
 import { PiRpcProcess } from '../../src/pi-rpc/process.js'
 import { PiTurnError, type StopReason } from '../../src/acp/session.js'
 
-export type RpcCommand = { id: string; type: string; message?: string }
+export type RpcCommand = { id: string; type: string; message?: string; images?: unknown[] }
 
 export function createRpcChild(
   options: {
@@ -27,10 +27,16 @@ export function createRpcChild(
     }
   })
   const send = (event: unknown) => stdout.write(`${JSON.stringify(event)}\n`)
-  const respond = (command: RpcCommand, success = true) => {
+  const respond = (command: RpcCommand, success = true, overrides: { error?: string; data?: unknown } = {}) => {
     const data =
       command.type === 'get_state'
-        ? { sessionId: options.sessionId ?? 'older', thinkingLevel: 'medium', model: { provider: 'test', id: 'model' } }
+        ? {
+            sessionId: options.sessionId ?? 'older',
+            thinkingLevel: 'medium',
+            model: { provider: 'test', id: 'model' },
+            isStreaming: false,
+            isCompacting: false
+          }
         : command.type === 'get_available_models'
           ? { models: [{ provider: 'test', id: 'model', name: 'Model' }] }
           : command.type === 'get_messages'
@@ -42,7 +48,8 @@ export function createRpcChild(
       command: command.type,
       success,
       data,
-      ...(!success ? { error: 'prompt failed' } : {})
+      ...(!success ? { error: 'prompt failed' } : {}),
+      ...overrides
     })
   }
   let buffer = ''
@@ -70,6 +77,16 @@ export function createRpcChild(
       stdout.destroy()
     }
   }
+}
+
+export function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
 }
 
 export async function bounded<T>(promise: Promise<T>): Promise<T> {
