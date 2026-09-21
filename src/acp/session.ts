@@ -1456,14 +1456,17 @@ export class PiAcpSession {
               ...(placeholder ? { description: placeholder } : {}),
               ...(prefill ? { default: prefill } : {})
             }
-          },
-          required: ['answer']
+          }
         }
       })
 
-      if (response.action === 'accept' && typeof response.content?.answer === 'string') {
-        await this.proc.sendExtensionUiResponse({ id, value: response.content.answer })
-        return
+      if (response.action === 'accept') {
+        const answer = response.content?.answer
+        // Pi permits empty text; clients such as Zed omit blank optional fields.
+        if (answer === undefined || typeof answer === 'string') {
+          await this.proc.sendExtensionUiResponse({ id, value: answer ?? '' })
+          return
+        }
       }
       await this.proc.sendExtensionUiResponse({ id, cancelled: true })
     } catch {

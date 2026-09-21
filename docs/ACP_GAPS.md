@@ -199,7 +199,10 @@ file snapshots, so they show the replaced fragments rather than surrounding cont
 pi extension `input` / `editor` UI requests are now mapped to form-mode
 `elicitation/create` (single string field; `placeholder` → description, editor
 `prefill` → default) when the client advertises `clientCapabilities.elicitation.form`
-at initialize (src/acp/session.ts `handleExtensionInput`). Clients without the
+at initialize (src/acp/session.ts `handleExtensionInput`). Text fields allow empty
+submissions, matching Pi dialogs; accepted forms with an omitted answer return an
+empty string, so optional comments can be skipped. Decline/cancel remain distinct
+from submitting empty text. Clients without the
 capability still get the old chat notice + cancel fallback. The SDK method is still
 `unstable_createElicitation`; revisit when it stabilizes.
 

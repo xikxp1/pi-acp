@@ -392,8 +392,7 @@ test('PiAcpSession: maps extension input to form elicitation and returns accepte
       type: 'object',
       properties: {
         answer: { type: 'string', title: 'Answer', description: 'Type your answer...' }
-      },
-      required: ['answer']
+      }
     }
   })
   assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-6', value: 'Ada' }])
