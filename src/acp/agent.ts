@@ -1612,35 +1612,37 @@ async function emitConfigOptionsUpdate(
 }
 
 async function setSessionModel(proc: PiRpcProcess, requestedModelId: string): Promise<void> {
-  // Accept either:
-  //  - "provider/model" (preferred, matches how we advertise)
-  //  - "model" (fallback, resolve via available models)
-  let provider: string | null = null
-  let modelId: string | null = null
+  const data = await proc.getAvailableModels()
+  const entries: unknown[] =
+    data && typeof data === 'object' && 'models' in data && Array.isArray(data.models) ? data.models : []
+  const models = entries.filter(
+    (model): model is { provider: string; id: string } =>
+      model !== null &&
+      typeof model === 'object' &&
+      'provider' in model &&
+      typeof model.provider === 'string' &&
+      model.provider.length > 0 &&
+      'id' in model &&
+      typeof model.id === 'string' &&
+      model.id.length > 0
+  )
 
-  if (requestedModelId.includes('/')) {
-    const [candidateProvider, ...rest] = requestedModelId.split('/')
-    provider = candidateProvider
-    modelId = rest.join('/')
-  } else {
-    modelId = requestedModelId
+  // Both provider and model IDs may contain slashes; prefer an exact advertised ID over a bare model ID.
+  const found =
+    models.find(model => `${model.provider}/${model.id}` === requestedModelId) ??
+    models.find(model => model.id === requestedModelId)
+  if (found) {
+    await proc.setModel(found.provider, found.id)
+    return
   }
 
-  if (!provider) {
-    const data = (await proc.getAvailableModels()) as any
-    const models: any[] = Array.isArray(data?.models) ? data.models : []
-    const found = models.find(m => String(m?.id) === modelId)
-    if (found) {
-      provider = String(found.provider)
-      modelId = String(found.id)
-    }
-  }
-
-  if (!provider || !modelId) {
+  // Preserve the provider/model fallback for models absent from the catalog; Pi validates the selection.
+  const separator = requestedModelId.indexOf('/')
+  if (separator < 1 || separator === requestedModelId.length - 1) {
     throw RequestError.invalidParams(`Unknown modelId: ${requestedModelId}`)
   }
 
-  await proc.setModel(provider, modelId)
+  await proc.setModel(requestedModelId.slice(0, separator), requestedModelId.slice(separator + 1))
 }
 
 function isSemver(v: string): boolean {

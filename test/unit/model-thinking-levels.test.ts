@@ -302,7 +302,14 @@ for (const path of ['legacy model', 'model config'] as const) {
       assert.equal((session as unknown as { contextWindow?: number }).contextWindow, transition.contextWindow)
       assert.deepEqual(
         child.commands.map(command => command.type),
-        ['set_model', 'get_state', 'get_state', 'get_available_models', 'get_available_thinking_levels']
+        [
+          'get_available_models',
+          'set_model',
+          'get_state',
+          'get_state',
+          'get_available_models',
+          'get_available_thinking_levels'
+        ]
       )
       if (path === 'model config') assert.deepEqual(result, { configOptions: options })
       else assert.equal(result, undefined)
@@ -367,7 +374,7 @@ for (const path of setterPaths) {
       if (f.controls.failCommand === mutation) {
         assert.deepEqual(
           child.commands.map(command => command.type),
-          [mutation]
+          model ? ['get_available_models', mutation] : [mutation]
         )
       }
     })
