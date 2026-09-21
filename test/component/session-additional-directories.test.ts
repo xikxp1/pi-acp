@@ -76,6 +76,7 @@ function fakeSpawn(spawned: any[]) {
       onEvent: () => () => {},
       getMessages: async () => ({ messages: [] }),
       getAvailableModels: async () => ({ models: [] }),
+      getAvailableThinkingLevels: async () => ['medium'],
       getState: async () => ({ thinkingLevel: 'medium', sessionId: 'new-1', sessionFile: '/tmp/new.jsonl' }),
       getCommands: async () => ({ commands: [] }),
       dispose: () => {}

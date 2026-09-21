@@ -27,6 +27,9 @@ test('PiAcpAgent: newSession throws AUTH_REQUIRED when pi reports zero available
       async getAvailableModels() {
         return { models: [] }
       },
+      async getAvailableThinkingLevels() {
+        return ['medium']
+      },
       async getState() {
         return { thinkingLevel: 'medium', model: null }
       }

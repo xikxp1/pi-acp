@@ -44,6 +44,9 @@ test('PiAcpAgent: startup info includes project-level packages from .pi/settings
         async getAvailableModels() {
           return { models: [{ provider: 'test', id: 'model', name: 'model' }] }
         },
+        async getAvailableThinkingLevels() {
+          return ['medium']
+        },
         async getState() {
           return { thinkingLevel: 'medium', model: { provider: 'test', id: 'model' } }
         },

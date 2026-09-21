@@ -39,9 +39,11 @@ export function createRpcChild(
           }
         : command.type === 'get_available_models'
           ? { models: [{ provider: 'test', id: 'model', name: 'Model' }] }
-          : command.type === 'get_messages'
-            ? { messages: [] }
-            : {}
+          : command.type === 'get_available_thinking_levels'
+            ? { levels: ['off', 'medium', 'high'] }
+            : command.type === 'get_messages'
+              ? { messages: [] }
+              : {}
     send({
       type: 'response',
       id: command.id,

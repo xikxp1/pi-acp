@@ -30,6 +30,7 @@ test('PiAcpAgent: loadSession replays toolResult as tool_call + tool_call_update
         ]
       }),
       getAvailableModels: async () => ({ models: [] }),
+      getAvailableThinkingLevels: async () => ['medium'],
       getState: async () => ({ thinkingLevel: 'medium' })
     } as any
   }
@@ -101,6 +102,7 @@ test('PiAcpAgent: loadSession titles historic tool calls from assistant toolCall
         ]
       }),
       getAvailableModels: async () => ({ models: [] }),
+      getAvailableThinkingLevels: async () => ['medium'],
       getState: async () => ({ thinkingLevel: 'medium' })
     } as any
   }
@@ -175,6 +177,7 @@ test('PiAcpAgent: loadSession replays thinking, images, locations and historic d
         ]
       }),
       getAvailableModels: async () => ({ models: [] }),
+      getAvailableThinkingLevels: async () => ['medium'],
       getState: async () => ({ thinkingLevel: 'medium' })
     } as any
   }

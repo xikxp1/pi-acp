@@ -19,7 +19,9 @@ createInterface({ input: process.stdin }).on('line', line => {
       ? { sessionId: `session-${process.pid}`, thinkingLevel: 'medium', model: { provider: 'test', id: 'model' } }
       : command.type === 'get_available_models'
         ? { models: [{ provider: 'test', id: 'model', name: 'Model' }] }
-        : {}
+        : command.type === 'get_available_thinking_levels'
+          ? { levels: ['off', 'medium', 'high'] }
+          : {}
   process.stdout.write(
     `${JSON.stringify({ type: 'response', id: command.id, command: command.type, success: true, data })}\n`
   )

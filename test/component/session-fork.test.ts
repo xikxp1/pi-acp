@@ -96,6 +96,7 @@ test('PiAcpAgent: unstable_forkSession spawns a new pi on the copied file and re
       onEvent: () => () => {},
       getMessages: async () => ({ messages: [] }),
       getAvailableModels: async () => ({ models: [] }),
+      getAvailableThinkingLevels: async () => ['medium'],
       getState: async () => ({ thinkingLevel: 'medium' }),
       getCommands: async () => ({ commands: [] }),
       dispose: () => {}

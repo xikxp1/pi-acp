@@ -163,6 +163,7 @@ test('PiAcpAgent: setSessionConfigOption auto-restores via pi session discovery 
           { provider: 'test', id: 'beta', name: 'Beta' }
         ]
       }),
+      getAvailableThinkingLevels: async () => ['medium'],
       getState: async () => state,
       async setModel(provider: string, modelId: string) {
         setModelCalls.push({ provider, modelId })
@@ -220,6 +221,13 @@ test('PiAcpAgent: setSessionConfigOption auto-restores via pi session discovery 
       }
     ])
     assert.deepEqual(conn.updates, [
+      {
+        sessionId: 'fallback-session',
+        update: {
+          sessionUpdate: 'current_mode_update',
+          currentModeId: 'medium'
+        }
+      },
       {
         sessionId: 'fallback-session',
         update: {

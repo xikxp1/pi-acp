@@ -67,7 +67,6 @@ import type { AvailableCommand } from '@agentclientprotocol/sdk'
 import { join, dirname, basename } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
-type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 type AdvertisedModel = {
   modelId: string
   name: string
@@ -390,10 +389,15 @@ export class PiAcpAgent implements ACPAgent {
       )
     }
 
-    const { configOptions, models, modes } = await getSessionConfiguration(session.proc, {
-      state,
-      availableModels
-    })
+    let configuration: Awaited<ReturnType<typeof getSessionConfiguration>>
+    try {
+      if (stateErr) throw stateErr
+      configuration = await getSessionConfiguration(session.proc, { state, availableModels })
+    } catch (err) {
+      this.cleanupFailedNewSession(session.sessionId, state)
+      throw maybeAuthRequiredError(err) ?? RequestError.internalError({}, String((err as Error)?.message ?? err))
+    }
+    const { configOptions, models, modes } = configuration
 
     const quietStartup = getQuietStartup(params.cwd)
     const updateNotice = buildUpdateNotice()
@@ -1000,6 +1004,7 @@ export class PiAcpAgent implements ACPAgent {
       additionalDirectories: normalizeAdditionalDirectories(params.additionalDirectories, params.cwd)
     })
     const proc = session.proc
+    const { configOptions, models, modes } = await this.getRestoredSessionConfiguration(session)
     const fileCommands = loadSlashCommands(params.cwd)
 
     // (Optional) ensure mapping stays fresh.
@@ -1158,8 +1163,6 @@ export class PiAcpAgent implements ACPAgent {
       }
     }
 
-    const { configOptions, models, modes } = await getSessionConfiguration(proc)
-
     const response = {
       configOptions,
       models,
@@ -1174,6 +1177,15 @@ export class PiAcpAgent implements ACPAgent {
     this.deferAvailableCommands(session, enableSkillCommands, fileCommands)
 
     return response
+  }
+
+  private async getRestoredSessionConfiguration(session: PiAcpSession, closeOnFailure = true) {
+    try {
+      return await getSessionConfiguration(session.proc)
+    } catch (err) {
+      if (closeOnFailure) this.sessions.close(session.sessionId)
+      throw err
+    }
   }
 
   private deferAvailableCommands(
@@ -1245,6 +1257,7 @@ export class PiAcpAgent implements ACPAgent {
       additionalDirectories
     })
 
+    const { configOptions, models, modes } = await this.getRestoredSessionConfiguration(session, session !== active)
     const piSession = findPiSession(params.sessionId)
     if (piSession?.title) {
       session.noteTitle(piSession.title)
@@ -1258,7 +1271,6 @@ export class PiAcpAgent implements ACPAgent {
       })
     }
 
-    const { configOptions, models, modes } = await getSessionConfiguration(session.proc)
     const response = { configOptions, models, modes, _meta: { piAcp: { startupInfo: null } } }
     this.deferAvailableCommands(session, getEnableSkillCommands(params.cwd), loadSlashCommands(params.cwd))
     return response
@@ -1297,6 +1309,7 @@ export class PiAcpAgent implements ACPAgent {
       additionalDirectories
     })
 
+    const { configOptions, models, modes } = await this.getRestoredSessionConfiguration(session)
     const sourceTitle = findPiSession(params.sessionId)?.title
     if (sourceTitle) {
       session.noteTitle(sourceTitle)
@@ -1306,7 +1319,6 @@ export class PiAcpAgent implements ACPAgent {
       })
     }
 
-    const { configOptions, models, modes } = await getSessionConfiguration(session.proc)
     const response = {
       sessionId: forked.sessionId,
       configOptions,
@@ -1367,21 +1379,12 @@ export class PiAcpAgent implements ACPAgent {
   async setSessionMode(params: SetSessionModeRequest): Promise<SetSessionModeResponse> {
     const session = await this.restoreSession(params.sessionId)
 
-    const mode = String(params.modeId)
-    if (!isThinkingLevel(mode)) {
-      throw RequestError.invalidParams(`Unknown modeId: ${mode}`)
+    const mode = params.modeId
+    if (typeof mode !== 'string' || mode.length === 0) {
+      throw RequestError.invalidParams('Expected nonempty string modeId')
     }
 
     await session.proc.setThinkingLevel(mode)
-
-    // Let the client know the current mode changed (keeps the dropdown in sync).
-    void this.conn.sessionUpdate({
-      sessionId: session.sessionId,
-      update: {
-        sessionUpdate: 'current_mode_update',
-        currentModeId: mode
-      }
-    })
 
     await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
 
@@ -1400,19 +1403,11 @@ export class PiAcpAgent implements ACPAgent {
       await setSessionModel(session.proc, params.value)
       await session.refreshContextWindow()
     } else if (configId === THOUGHT_LEVEL_CONFIG_ID) {
-      if (!isThinkingLevel(params.value)) {
-        throw RequestError.invalidParams(`Unknown thinking level: ${params.value}`)
+      if (params.value.length === 0) {
+        throw RequestError.invalidParams('Expected nonempty thinking level')
       }
 
       await session.proc.setThinkingLevel(params.value)
-
-      void this.conn.sessionUpdate({
-        sessionId: session.sessionId,
-        update: {
-          sessionUpdate: 'current_mode_update',
-          currentModeId: params.value
-        }
-      })
     } else {
       throw RequestError.invalidParams(`Unknown config option: ${configId}`)
     }
@@ -1420,10 +1415,6 @@ export class PiAcpAgent implements ACPAgent {
     const configOptions = await emitConfigOptionsUpdate(this.conn, session.sessionId, session.proc)
     return { configOptions }
   }
-}
-
-function isThinkingLevel(x: string): x is ThinkingLevel {
-  return x === 'off' || x === 'minimal' || x === 'low' || x === 'medium' || x === 'high' || x === 'xhigh'
 }
 
 async function getThinkingState(
@@ -1437,23 +1428,12 @@ async function getThinkingState(
   }>
   currentModeId: string
 }> {
-  // Ask pi for current thinking level.
-  let current: ThinkingLevel = 'medium'
-
-  const state =
-    pre?.state ??
-    (await (async () => {
-      try {
-        return (await proc.getState()) as any
-      } catch {
-        return null
-      }
-    })())
-
-  const tl = typeof state?.thinkingLevel === 'string' ? state.thinkingLevel : null
-  if (tl && isThinkingLevel(tl)) current = tl
-
-  const available: ThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh']
+  const state: unknown = pre?.state ?? (await proc.getState())
+  const available = await proc.getAvailableThinkingLevels()
+  const current = state && typeof state === 'object' && 'thinkingLevel' in state ? state.thinkingLevel : undefined
+  if (typeof current !== 'string' || current.length === 0 || !available.includes(current)) {
+    throw new Error('pi returned a thinking level absent from available levels')
+  }
 
   return {
     currentModeId: current,
@@ -1483,7 +1463,8 @@ async function getSessionConfiguration(
     currentModeId: string
   }
 }> {
-  const [models, modes] = await Promise.all([getModelState(proc, pre), getThinkingState(proc, { state: pre?.state })])
+  const state = pre?.state ?? (await proc.getState())
+  const [models, modes] = await Promise.all([getModelState(proc, { ...pre, state }), getThinkingState(proc, { state })])
 
   return {
     configOptions: buildConfigOptions({ models, modes }),
@@ -1613,8 +1594,12 @@ async function emitConfigOptionsUpdate(
   sessionId: string,
   proc: PiRpcProcess
 ): Promise<SessionConfigOption[]> {
-  const { configOptions } = await getSessionConfiguration(proc)
+  const { configOptions, modes } = await getSessionConfiguration(proc)
 
+  await conn.sessionUpdate({
+    sessionId,
+    update: { sessionUpdate: 'current_mode_update', currentModeId: modes.currentModeId }
+  })
   await conn.sessionUpdate({
     sessionId,
     update: {

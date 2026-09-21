@@ -41,6 +41,9 @@ test('PiAcpAgent: newSession returns configOptions for model and thinking select
             ]
           }
         },
+        async getAvailableThinkingLevels() {
+          return ['off', 'high']
+        },
         async getState() {
           return {
             thinkingLevel: 'high',
@@ -81,11 +84,7 @@ test('PiAcpAgent: newSession returns configOptions for model and thinking select
         currentValue: 'high',
         options: [
           { value: 'off', name: 'Thinking: off', description: null },
-          { value: 'minimal', name: 'Thinking: minimal', description: null },
-          { value: 'low', name: 'Thinking: low', description: null },
-          { value: 'medium', name: 'Thinking: medium', description: null },
-          { value: 'high', name: 'Thinking: high', description: null },
-          { value: 'xhigh', name: 'Thinking: xhigh', description: null }
+          { value: 'high', name: 'Thinking: high', description: null }
         ]
       }
     ])
@@ -94,7 +93,7 @@ test('PiAcpAgent: newSession returns configOptions for model and thinking select
   }
 })
 
-test('PiAcpAgent: setSessionConfigOption maps model changes to pi and emits config_option_update', async () => {
+test('PiAcpAgent: setSessionConfigOption maps model changes to pi and emits mode then config updates', async () => {
   const conn = new FakeAgentSideConnection()
   const state = {
     thinkingLevel: 'medium',
@@ -114,6 +113,9 @@ test('PiAcpAgent: setSessionConfigOption maps model changes to pi and emits conf
             { provider: 'test', id: 'beta', name: 'Beta' }
           ]
         }
+      },
+      async getAvailableThinkingLevels() {
+        return ['medium']
       },
       async getState() {
         return state
@@ -144,6 +146,13 @@ test('PiAcpAgent: setSessionConfigOption maps model changes to pi and emits conf
     {
       sessionId: 's1',
       update: {
+        sessionUpdate: 'current_mode_update',
+        currentModeId: 'medium'
+      }
+    },
+    {
+      sessionId: 's1',
+      update: {
         sessionUpdate: 'config_option_update',
         configOptions: result.configOptions
       }
@@ -167,6 +176,9 @@ test('PiAcpAgent: setSessionConfigOption maps thought level changes to pi and em
         return {
           models: [{ provider: 'test', id: 'alpha', name: 'Alpha' }]
         }
+      },
+      async getAvailableThinkingLevels() {
+        return ['medium', 'xhigh']
       },
       async getState() {
         return state

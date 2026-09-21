@@ -61,8 +61,12 @@ export class FakePiRpcProcess {
     this.extensionUiResponses.push(response)
   }
 
-  async getState(): Promise<any> {
-    return {}
+  async getState(): Promise<Record<string, unknown>> {
+    return { thinkingLevel: 'medium' }
+  }
+
+  async getAvailableThinkingLevels(): Promise<string[]> {
+    return ['off', 'medium', 'high']
   }
 
   async getAvailableModels(): Promise<any> {
