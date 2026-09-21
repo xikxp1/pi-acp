@@ -29,7 +29,7 @@ import {
 } from './translate/bash.js'
 import { toolResultToText } from './translate/pi-tools.js'
 import { displayedCustomMessageText, isSubagentTool, subagentResultText, SubagentCards } from './translate/subagents.js'
-import { toToolKind, toToolTitle } from './translate/tool-presentation.js'
+import { toToolKind, toToolResultTitle, toToolTitle } from './translate/tool-presentation.js'
 import { getParsedEdits, getToolPath, toToolCallLocations } from './translate/tool-args.js'
 import { additionalDirectoriesSystemPrompt } from './additional-directories.js'
 import { todoDetailsToPlan } from './translate/plan.js'
@@ -1118,9 +1118,11 @@ export class PiAcpSession {
           content = [{ type: 'content', content: { type: 'text', text } }] satisfies ToolCallContent[]
         }
 
+        const title = typeof toolName === 'string' ? toToolResultTitle(toolName, result) : undefined
         this.emit({
           sessionUpdate: 'tool_call_update',
           toolCallId,
+          ...(title ? { title } : {}),
           status: isError ? 'failed' : 'completed',
           content,
           ...(hasStructuredDiff ? {} : { rawOutput: result })

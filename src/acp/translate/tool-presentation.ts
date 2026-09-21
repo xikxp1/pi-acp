@@ -59,6 +59,43 @@ export function toToolTitle(toolName: string, args: unknown, cwd: string): strin
   }
 }
 
+/** Undefined preserves the existing input-based or specialized title. */
+export function toToolResultTitle(toolName: string, result: unknown): string | undefined {
+  if (!toolName.trim() || toToolKind(toolName) !== 'other' || isSubagentTool(toolName.toLowerCase())) return undefined
+
+  const rawText = plainTextResult(result)
+  if (rawText === undefined || /[\r\n\u2028\u2029]/.test(rawText)) return undefined
+  const text = rawText.trim()
+  if (!text || isStructuredJson(text)) return undefined
+
+  const characters = Array.from(text)
+  const summary = characters.length > MAX_TITLE_ARG ? `${characters.slice(0, MAX_TITLE_ARG - 1).join('')}…` : text
+  return `${toolName}: ${summary}`
+}
+
+function plainTextResult(result: unknown): string | undefined {
+  if (typeof result === 'string') return result
+  const content = record(result).content
+  if (!Array.isArray(content) || content.length === 0) return undefined
+
+  const texts: string[] = []
+  for (const value of content) {
+    const block = record(value)
+    if (block.type !== 'text' || typeof block.text !== 'string' || isStructuredJson(block.text.trim())) return undefined
+    texts.push(block.text)
+  }
+  return texts.join('')
+}
+
+function isStructuredJson(text: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    return parsed !== null && typeof parsed === 'object'
+  } catch {
+    return false
+  }
+}
+
 function join(...parts: Array<string | undefined>): string {
   return parts.filter((p): p is string => Boolean(p)).join(' ')
 }

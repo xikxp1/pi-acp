@@ -43,7 +43,7 @@ import {
 import { normalizePiAssistantText, normalizePiMessageText } from './translate/pi-messages.js'
 import { toolResultToText } from './translate/pi-tools.js'
 import { displayedCustomMessageText } from './translate/subagents.js'
-import { toToolKind, toToolTitle } from './translate/tool-presentation.js'
+import { toToolKind, toToolResultTitle, toToolTitle } from './translate/tool-presentation.js'
 import { historicDiffContent, toToolCallLocations } from './translate/tool-args.js'
 import { normalizePiAssistantThinking, piImageBlocks } from './translate/pi-messages.js'
 import {
@@ -1150,11 +1150,13 @@ export class PiAcpAgent implements ACPAgent {
 
         const diff = isError ? undefined : historicDiffContent(toolName, args)
         const text = toolResultToText(m)
+        const title = toToolResultTitle(toolName, m)
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
           update: {
             sessionUpdate: 'tool_call_update',
             toolCallId,
+            ...(title ? { title } : {}),
             status: isError ? 'failed' : 'completed',
             content: diff ?? (text ? [{ type: 'content', content: { type: 'text', text } }] : null),
             ...(diff ? {} : { rawOutput: m })

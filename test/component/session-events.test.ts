@@ -201,6 +201,7 @@ test('PiAcpSession: emits plans only for successful todo results', async () => {
         {
           sessionUpdate: 'tool_call_update',
           toolCallId: 'todo1',
+          ...(scenario.toolName === 'other' ? { title: 'other: done' } : {}),
           status: scenario.isError ? 'failed' : 'completed',
           content: [{ type: 'content', content: { type: 'text', text: 'done' } }],
           rawOutput: result
