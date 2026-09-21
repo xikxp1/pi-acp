@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import * as readline from 'node:readline'
+import { StringDecoder } from 'node:string_decoder'
 import { getPiCommand, shouldUseShellForPiCommand } from './command.js'
 
 export class PiRpcSpawnError extends Error {
@@ -103,7 +103,7 @@ export class PiRpcProcess {
   private readonly preludeLines: string[] = []
   private terminalError?: Error
   private failureHandlers = new Set<(error: Error) => void>()
-  private readonly readline: readline.Interface
+  private readonly closeStdoutReader: () => void
   private disposed = false
 
   private constructor(
@@ -112,8 +112,13 @@ export class PiRpcProcess {
   ) {
     this.child = child
 
-    const rl = (this.readline = readline.createInterface({ input: child.stdout }))
-    rl.on('line', line => {
+    const decoder = new StringDecoder('utf8')
+    let buffer = ''
+    let closed = false
+
+    const onLine = (line: string) => {
+      if (closed) return
+      if (line.endsWith('\r')) line = line.slice(0, -1)
       if (!line.trim()) return
       let msg: any
       try {
@@ -139,7 +144,36 @@ export class PiRpcProcess {
       }
 
       for (const h of this.eventHandlers) h(msg as PiRpcEvent)
-    })
+    }
+
+    // RPC records end only at LF; Unicode separators inside JSON strings are ordinary content.
+    const onData = (chunk: Buffer | string) => {
+      if (closed) return
+      buffer += typeof chunk === 'string' ? chunk : decoder.write(chunk)
+      let newline: number
+      while (!closed && (newline = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, newline)
+        buffer = buffer.slice(newline + 1)
+        onLine(line)
+      }
+    }
+    const onEnd = () => {
+      if (closed) return
+      const remaining = buffer + decoder.end()
+      buffer = ''
+      if (remaining.length > 0) onLine(remaining)
+      this.closeStdoutReader()
+    }
+    this.closeStdoutReader = () => {
+      if (closed) return
+      closed = true
+      buffer = ''
+      child.stdout.off('data', onData)
+      child.stdout.off('end', onEnd)
+      child.stdout.pause()
+    }
+    child.stdout.on('data', onData)
+    child.stdout.on('end', onEnd)
 
     // Write callbacks do not consume the stream's separate 'error' event.
     child.stdin.on('error', err => this.fail(err))
@@ -417,7 +451,7 @@ export class PiRpcProcess {
     this.terminalError = error
     for (const [, p] of this.pending) p.reject(error)
     this.pending.clear()
-    this.readline.close()
+    this.closeStdoutReader()
     this.eventHandlers = []
     const handlers = [...this.failureHandlers]
     this.failureHandlers.clear()
