@@ -346,6 +346,17 @@ export class PiAcpSession {
   // Ensure `session/update` notifications are sent in order and can be awaited
   // before completing a `session/prompt` request.
   private lastEmit: Promise<void> = Promise.resolve()
+  private emitQueueDepth = 0
+  private deliveryLatencyMs = 0
+  private deltaBuffer: {
+    sessionUpdate: 'agent_message_chunk' | 'agent_thought_chunk'
+    text: string
+  } | null = null
+  private deltaFlushTimer: ReturnType<typeof setTimeout> | null = null
+
+  private static readonly deltaFlushMinMs = 100
+  private static readonly deltaFlushMaxMs = 250
+  private static readonly deltaFlushMaxChars = 16 * 1024
 
   constructor(opts: {
     sessionId: string
@@ -391,6 +402,12 @@ export class PiAcpSession {
       else turn.reject(new PiTurnError(errorMessageOf(error)))
     }
     this.publishActivity()
+  }
+
+  private async failTurnsAfterFlush(error: unknown, isCurrent: () => boolean): Promise<void> {
+    if (!isCurrent()) return
+    await this.flushEmits()
+    if (isCurrent()) this.failTurns(error)
   }
 
   private handleFailure(error: Error): void {
@@ -500,6 +517,7 @@ export class PiAcpSession {
 
   async cancel(): Promise<void> {
     if (this.terminalError) return
+    this.flushDeltaBuffer()
     // Cancel current and clear any queued prompts.
     this.cancelRequested = true
     this.settling = undefined
@@ -551,23 +569,74 @@ export class PiAcpSession {
     return this.cancelRequested
   }
 
-  private emit(update: SessionUpdate): void {
+  private emitImmediate(update: SessionUpdate): void {
     // Serialize update delivery.
+    this.emitQueueDepth++
     this.lastEmit = this.lastEmit
-      .then(() =>
-        this.conn.sessionUpdate({
-          sessionId: this.sessionId,
-          update
-        })
-      )
+      .then(async () => {
+        const startedAt = performance.now()
+        try {
+          await this.conn.sessionUpdate({ sessionId: this.sessionId, update })
+        } finally {
+          const elapsed = performance.now() - startedAt
+          this.deliveryLatencyMs = this.deliveryLatencyMs ? this.deliveryLatencyMs * 0.75 + elapsed * 0.25 : elapsed
+        }
+      })
       .catch(() => {
         // Ignore notification errors (client may have gone away). We still want
         // prompt completion.
       })
+      .finally(() => {
+        this.emitQueueDepth--
+      })
+  }
+
+  private deltaFlushDelayMs(): number {
+    const pressure = Math.max(this.emitQueueDepth, Math.ceil(this.deliveryLatencyMs / 20))
+    return Math.min(PiAcpSession.deltaFlushMaxMs, PiAcpSession.deltaFlushMinMs * Math.max(1, pressure))
+  }
+
+  private flushDeltaBuffer(): void {
+    if (this.deltaFlushTimer !== null) {
+      clearTimeout(this.deltaFlushTimer)
+      this.deltaFlushTimer = null
+    }
+    const buffered = this.deltaBuffer
+    this.deltaBuffer = null
+    if (!buffered) return
+    this.emitImmediate({
+      sessionUpdate: buffered.sessionUpdate,
+      content: { type: 'text', text: buffered.text }
+    })
+  }
+
+  private emitDelta(sessionUpdate: 'agent_message_chunk' | 'agent_thought_chunk', text: string): void {
+    if (!text) return
+    if (this.deltaBuffer && this.deltaBuffer.sessionUpdate !== sessionUpdate) this.flushDeltaBuffer()
+    this.deltaBuffer ??= { sessionUpdate, text: '' }
+    this.deltaBuffer.text += text
+    if (this.deltaBuffer.text.length >= PiAcpSession.deltaFlushMaxChars) {
+      this.flushDeltaBuffer()
+      return
+    }
+    if (this.deltaFlushTimer === null) {
+      this.deltaFlushTimer = setTimeout(() => this.flushDeltaBuffer(), this.deltaFlushDelayMs())
+    }
+  }
+
+  private emit(update: SessionUpdate): void {
+    // Non-delta updates are ordering boundaries, not part of the model's text batch.
+    this.flushDeltaBuffer()
+    this.emitImmediate(update)
   }
 
   private async flushEmits(): Promise<void> {
-    await this.lastEmit
+    for (;;) {
+      this.flushDeltaBuffer()
+      const pending = this.lastEmit
+      await pending
+      if (pending === this.lastEmit && !this.deltaBuffer) return
+    }
   }
 
   private emitBashToolCall(params: {
@@ -734,9 +803,7 @@ export class PiAcpSession {
         this.advanceQueue()
         this.publishActivity()
       })
-      .catch(error => {
-        if (current()) this.failTurns(error)
-      })
+      .catch(error => this.failTurnsAfterFlush(error, current))
   }
 
   private requeueBusyTurn(queued: QueuedTurn, turn: PendingTurn, activity: 'agent' | 'compaction'): void {
@@ -774,11 +841,15 @@ export class PiAcpSession {
           this.compacting = snapshot.isCompacting
         }
       })
-      .catch(error => {
-        const superseded =
-          activity === 'agent' ? this.agentVersion !== agentVersion : this.compactionVersion !== compactionVersion
-        if (!this.terminalError && this.reconciling === token && !superseded) this.failTurns(error)
-      })
+      .catch(error =>
+        this.failTurnsAfterFlush(
+          error,
+          () =>
+            !this.terminalError &&
+            this.reconciling === token &&
+            (activity === 'agent' ? this.agentVersion === agentVersion : this.compactionVersion === compactionVersion)
+        )
+      )
       .finally(() => {
         if (this.terminalError || this.reconciling !== token) return
         this.reconciling = undefined
@@ -788,6 +859,7 @@ export class PiAcpSession {
   }
 
   private startTurn(t: QueuedTurn): void {
+    this.flushDeltaBuffer()
     this.cancelRequested = false
 
     this.lastUsageUsed = undefined
@@ -811,9 +883,9 @@ export class PiAcpSession {
         turn.promptResponded = true
         // A slow prompt preflight can accept after the original abort was sent.
         if (turn.cancelled && !this.abortPending) {
-          void this.abortCurrent(true).catch(error => {
-            if (!this.terminalError && this.pendingTurn === turn) this.failTurns(error)
-          })
+          void this.abortCurrent(true).catch(error =>
+            this.failTurnsAfterFlush(error, () => !this.terminalError && this.pendingTurn === turn)
+          )
         }
         this.finishTurnIfSettled()
       })
@@ -823,11 +895,7 @@ export class PiAcpSession {
           this.requeueBusyTurn(t, turn, err.activity)
           return
         }
-        const finish = () => {
-          if (this.terminalError || this.pendingTurn !== turn) return
-          this.failTurns(err)
-        }
-        void this.flushEmits().then(finish, finish)
+        return this.failTurnsAfterFlush(err, () => !this.terminalError && this.pendingTurn === turn)
       })
   }
 
@@ -852,6 +920,14 @@ export class PiAcpSession {
   private handlePiEvent(ev: PiRpcEvent) {
     if (this.terminalError) return
     const type = String((ev as any).type ?? '')
+    const ame = ev.assistantMessageEvent as { type?: unknown; delta?: unknown } | undefined
+    if (
+      type !== 'message_update' ||
+      (ame?.type !== 'text_delta' && ame?.type !== 'thinking_delta') ||
+      typeof ame.delta !== 'string'
+    ) {
+      this.flushDeltaBuffer()
+    }
 
     if (this.pendingTurn && !this.settling && (type === 'message_update' || type === 'message_end')) {
       const update = streamedUsageUpdate(ev, this.contextWindow)
@@ -872,22 +948,13 @@ export class PiAcpSession {
         break
       }
       case 'message_update': {
-        const ame = (ev as any).assistantMessageEvent
-
-        // Stream assistant text.
         if (ame?.type === 'text_delta' && typeof ame.delta === 'string') {
-          this.emit({
-            sessionUpdate: 'agent_message_chunk',
-            content: { type: 'text', text: ame.delta } satisfies ContentBlock
-          })
+          this.emitDelta('agent_message_chunk', ame.delta)
           break
         }
 
         if (ame?.type === 'thinking_delta' && typeof ame.delta === 'string') {
-          this.emit({
-            sessionUpdate: 'agent_thought_chunk',
-            content: { type: 'text', text: ame.delta } satisfies ContentBlock
-          })
+          this.emitDelta('agent_thought_chunk', ame.delta)
           break
         }
 

@@ -7,7 +7,7 @@ import { PiAcpSession } from '../../src/acp/session.js'
 import type { PiRpcProcess } from '../../src/pi-rpc/process.js'
 import { FakeAgentSideConnection, FakePiRpcProcess, asAgentConn } from '../helpers/fakes.js'
 
-test('PiAcpSession: emits agent_message_chunk for text_delta', async () => {
+test('PiAcpSession: emits agent_message_chunk for text_delta at text_end', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
 
@@ -24,6 +24,7 @@ test('PiAcpSession: emits agent_message_chunk for text_delta', async () => {
     type: 'message_update',
     assistantMessageEvent: { type: 'text_delta', delta: 'hi' }
   })
+  proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_end' } })
 
   await new Promise(r => setTimeout(r, 0))
 
@@ -35,7 +36,7 @@ test('PiAcpSession: emits agent_message_chunk for text_delta', async () => {
   })
 })
 
-test('PiAcpSession: emits agent_thought_chunk for thinking_delta', async () => {
+test('PiAcpSession: emits agent_thought_chunk for thinking_delta at thinking_end', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
 
@@ -52,6 +53,7 @@ test('PiAcpSession: emits agent_thought_chunk for thinking_delta', async () => {
     type: 'message_update',
     assistantMessageEvent: { type: 'thinking_delta', delta: 'thinking...' }
   })
+  proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_end' } })
 
   await new Promise(r => setTimeout(r, 0))
 
@@ -632,6 +634,7 @@ test('PiAcpSession: preserves ordering when auto_retry_start is interleaved with
   proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'before ' } })
   proc.emit({ type: 'auto_retry_start', attempt: 1, maxAttempts: 2, delayMs: 2000 } as any)
   proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'after' } })
+  proc.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_end' } })
 
   await new Promise(r => setTimeout(r, 0))
 

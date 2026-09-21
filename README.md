@@ -12,7 +12,9 @@ Expect some minor breaking changes.
 
 ## Features
 
-- Streams assistant output as ACP `agent_message_chunk`
+- Streams assistant text and thinking as ACP `agent_message_chunk` / `agent_thought_chunk`
+  - Adjacent deltas are coalesced using a 100–250 ms window that adapts to notification queue depth and delivery latency. Batches flush early at 16K UTF-16 code units or at message, tool, and turn boundaries. Cancellation and process cleanup flush pending text before the active prompt settles.
+  - Coalescing reduces notification volume; it does not impose a hard limit on the delivery backlog.
 - Maps pi tool execution to ACP `tool_call` / `tool_call_update`
   - Generic tool calls show single-line plain-text results in their collapsed titles, truncated to 80 characters with an ellipsis. Full output and failure status are preserved, including on session reload; specialized tool titles remain unchanged.
   - Tool call locations are surfaced when available for ACP clients that support opening the referenced file/context
@@ -213,7 +215,6 @@ Cancellation clears the adapter's queued prompts and aborts Pi's current run. Me
 - Live subagent cards require the companion extension and a compatible `@tintinweb/pi-subagents` installation. Workflow-owned/nested agents and Zed's native child-session navigation are not supported. Live transcripts are display-only; session reload replays stored completion messages, not the live cards.
 - ACP filesystem (`fs/*`) and terminal (`terminal/*`) delegation require the companion `pi-acp-fs` / `pi-acp-terminal` extensions (see [extensions/README.md](extensions/README.md)). Without them pi reads/writes and executes locally, and bash output is rendered through Zed's display-only terminal emulation.
 - MCP servers are accepted in ACP params and stored in session state, but not wired through to pi in this adapter. If you use [pi MCP adapter](https://github.com/nicobailon/pi-mcp-adapter) it will be available in the ACP client.
-- Assistant streaming is currently sent as `agent_message_chunk` (no separate thought stream).
 - Prompt queuing is implemented in the adapter, independently of pi's steering/follow-up queues (see [Prompt queues and background work](#prompt-queues-and-background-work)).
 - ~~ACP clients don't yet suport session history, but ACP sessions from `pi-acp` can be `/resume`d in pi directly~~
 
