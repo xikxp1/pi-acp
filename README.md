@@ -32,6 +32,7 @@ Expect some minor breaking changes.
   - `pi-acp` stores a small mapping file at `~/.pi/pi-acp/session-map.json` so `session/load` can reattach to a previous pi session file
   - `session/resume` supports fast reconnect without history replay, reusing active sessions
   - `session/close` cancels ongoing work and frees runtime resources without deleting saved sessions
+  - Pi and extension renames update session titles live. Unnamed sessions display a whitespace-normalized preview of the first user text (up to 80 Unicode code points), including with the startup banner enabled. `/name` and saved names take precedence; restored sessions keep their original title. Fallback previews require no model call and do not write a session name.
 - Slash commands
   - Loads file-based slash commands compatible with pi’s conventions
   - Adds a small set of built-in commands for headless/editor usage

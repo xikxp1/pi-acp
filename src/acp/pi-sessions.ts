@@ -2,6 +2,9 @@ import { readdirSync, readFileSync, statSync, openSync, readSync, closeSync, exi
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, resolve, isAbsolute, dirname } from 'node:path'
+import { StringDecoder } from 'node:string_decoder'
+
+import { titleFromContent } from './session-title.js'
 
 export type PiSessionListItem = {
   sessionId: string
@@ -112,6 +115,26 @@ function parseSessionHeader(firstLine: string): { sessionId: string; cwd: string
   }
 }
 
+function sessionInfoNameFromLine(line: string): string | null {
+  try {
+    const obj = JSON.parse(line) as unknown
+    if (
+      obj &&
+      typeof obj === 'object' &&
+      'type' in obj &&
+      obj.type === 'session_info' &&
+      'name' in obj &&
+      typeof obj.name === 'string' &&
+      obj.name.trim()
+    ) {
+      return obj.name.trim()
+    }
+  } catch {
+    // ignore
+  }
+  return null
+}
+
 function pickTitleFromTail(tail: string): string | null {
   // Try to find the *latest* session_info entry (stores the user-provided name).
   // We scan backwards line-by-line.
@@ -119,14 +142,8 @@ function pickTitleFromTail(tail: string): string | null {
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i].trim()
     if (!line) continue
-    try {
-      const obj = JSON.parse(line) as any
-      if (obj?.type === 'session_info' && typeof obj?.name === 'string' && obj.name.trim()) {
-        return obj.name.trim()
-      }
-    } catch {
-      // ignore
-    }
+    const name = sessionInfoNameFromLine(line)
+    if (name) return name
   }
   return null
 }
@@ -137,6 +154,7 @@ function scanSessionInfoNameFromFile(path: string): string | null {
   const fd = openSync(path, 'r')
   try {
     const buf = Buffer.alloc(256 * 1024)
+    const decoder = new StringDecoder('utf8')
     let leftover = ''
     let offset = 0
     let lastName: string | null = null
@@ -146,36 +164,21 @@ function scanSessionInfoNameFromFile(path: string): string | null {
       if (n <= 0) break
       offset += n
 
-      const chunk = leftover + buf.subarray(0, n).toString('utf8')
+      const chunk = leftover + decoder.write(buf.subarray(0, n))
       const lines = chunk.split(/\r?\n/)
       leftover = lines.pop() ?? ''
 
       for (const line0 of lines) {
         const line = line0.trim()
         if (!line) continue
-        try {
-          const obj = JSON.parse(line) as any
-          if (obj?.type === 'session_info' && typeof obj?.name === 'string' && obj.name.trim()) {
-            lastName = obj.name.trim()
-          }
-        } catch {
-          // ignore
-        }
+        const name = sessionInfoNameFromLine(line)
+        if (name) lastName = name
       }
     }
 
     // Best-effort: parse leftover if it was a full line without trailing newline.
-    const tailLine = leftover.trim()
-    if (tailLine) {
-      try {
-        const obj = JSON.parse(tailLine) as any
-        if (obj?.type === 'session_info' && typeof obj?.name === 'string' && obj.name.trim()) {
-          lastName = obj.name.trim()
-        }
-      } catch {
-        // ignore
-      }
-    }
+    const name = sessionInfoNameFromLine((leftover + decoder.end()).trim())
+    if (name) lastName = name
 
     return lastName
   } catch {
@@ -229,38 +232,53 @@ function pickUpdatedAtFromTail(tail: string): string | null {
 }
 
 function pickFallbackTitleFromHead(path: string): string | null {
-  // Fallback to first user message.
-  // NOTE: we keep this simple: read a small head chunk and parse line-by-line.
+  // Fallback to the first usable user message in the first 2000 lines.
   try {
     const raw = readFileSync(path, { encoding: 'utf8' })
     const lines = raw.split(/\r?\n/)
-    for (const line0 of lines) {
+    for (const line0 of lines.slice(0, 2000)) {
       const line = line0.trim()
       if (!line) continue
       try {
-        const obj = JSON.parse(line) as any
-        if (obj?.type === 'message' && obj?.message?.role === 'user') {
-          const content = obj?.message?.content
-          if (typeof content === 'string') return content.slice(0, 80)
-          if (Array.isArray(content)) {
-            const t = content.find((c: any) => c?.type === 'text' && typeof c?.text === 'string')
-            if (t?.text) return String(t.text).slice(0, 80)
-          }
+        const obj = JSON.parse(line) as unknown
+        if (!obj || typeof obj !== 'object' || !('type' in obj) || obj.type !== 'message' || !('message' in obj)) {
+          continue
+        }
+        const message = obj.message
+        if (
+          message &&
+          typeof message === 'object' &&
+          'role' in message &&
+          message.role === 'user' &&
+          'content' in message
+        ) {
+          const title = titleFromContent(message.content)
+          if (title) return title
         }
       } catch {
         // ignore
       }
-
-      // Avoid scanning extremely large files fully.
-      // If we didn't find a user message in the first ~2000 lines, give up.
-      // (Most sessions have it early.)
-      if (lines.length > 2000) break
     }
   } catch {
     // ignore
   }
 
   return null
+}
+
+export function readPiSessionTitle(path: string, tail?: string): string | null {
+  try {
+    const title = pickTitleFromTail(tail ?? readTail(path))
+    if (title) return title
+  } catch {
+    // ignore
+  }
+
+  try {
+    return scanSessionInfoNameFromFile(path) ?? pickFallbackTitleFromHead(path)
+  } catch {
+    return null
+  }
 }
 
 export function listPiSessions(): PiSessionListItem[] {
@@ -278,19 +296,15 @@ export function listPiSessions(): PiSessionListItem[] {
 
     let updatedAt: string | null = null
 
-    let title: string | null = null
+    let tail: string | undefined
     try {
-      const tail = readTail(file)
-      title = pickTitleFromTail(tail)
+      tail = readTail(file)
       updatedAt = pickUpdatedAtFromTail(tail)
     } catch {
       // ignore
     }
 
-    // If the session was named early and grew large, it may fall outside of the tail window.
-    if (!title) {
-      title = scanSessionInfoNameFromFile(file)
-    }
+    const title = readPiSessionTitle(file, tail)
 
     // Fallback for updatedAt when we couldn't parse timestamps from tail.
     if (!updatedAt) {
@@ -299,10 +313,6 @@ export function listPiSessions(): PiSessionListItem[] {
       } catch {
         updatedAt = null
       }
-    }
-
-    if (!title) {
-      title = pickFallbackTitleFromHead(file)
     }
 
     items.push({

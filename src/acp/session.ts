@@ -14,6 +14,7 @@ import { isAbsolute, resolve as resolvePath } from 'node:path'
 import { PiRpcProcess, PiRpcPromptBusyError, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/process.js'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { SessionStore } from './session-store.js'
+import { titleFromContent } from './session-title.js'
 import { ClientBridge, clientBridgeEnv, type ClientCapabilities } from './client-bridge.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
 import {
@@ -236,7 +237,8 @@ export class SessionManager {
       proc,
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
-      clientSupportsFormElicitation: params.clientSupportsFormElicitation
+      clientSupportsFormElicitation: params.clientSupportsFormElicitation,
+      title: typeof state?.sessionName === 'string' ? state.sessionName : null
     })
     ref.session = session
 
@@ -254,7 +256,10 @@ export class SessionManager {
    * Used by session/load: create a session object bound to an existing sessionId/proc
    * if it isn't already registered.
    */
-  getOrCreate(sessionId: string, params: SessionCreateParams & { proc: PiRpcProcess }): PiAcpSession {
+  getOrCreate(
+    sessionId: string,
+    params: SessionCreateParams & { proc: PiRpcProcess; title?: string | null }
+  ): PiAcpSession {
     const existing = this.sessions.get(sessionId)
     if (existing) return existing
 
@@ -266,7 +271,8 @@ export class SessionManager {
       proc: params.proc,
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
-      clientSupportsFormElicitation: params.clientSupportsFormElicitation
+      clientSupportsFormElicitation: params.clientSupportsFormElicitation,
+      title: params.title
     })
 
     this.sessions.set(sessionId, session)
@@ -297,9 +303,10 @@ export class PiAcpSession {
   private startupInfo: string | null = null
   private startupInfoSent = false
 
-  // Last session title forwarded to the client, used to avoid duplicate
-  // `session_info_update` notifications when polling pi state.
+  private title: string | undefined
   private lastTitle: string | undefined
+  private nameVersion = 0
+  private nameEventVersion = 0
 
   readonly proc: PiRpcProcess
   private readonly conn: AgentSideConnection
@@ -367,6 +374,7 @@ export class PiAcpSession {
     conn: AgentSideConnection
     fileCommands?: FileSlashCommand[]
     clientSupportsFormElicitation?: boolean
+    title?: string | null
   }) {
     this.sessionId = opts.sessionId
     this.cwd = opts.cwd
@@ -376,6 +384,7 @@ export class PiAcpSession {
     this.conn = opts.conn
     this.fileCommands = opts.fileCommands ?? []
     this.clientSupportsFormElicitation = opts.clientSupportsFormElicitation ?? false
+    this.title = opts.title?.trim() || undefined
 
     this.unsubscribeEvents = this.proc.onEvent(ev => this.handlePiEvent(ev))
     const unsubscribe = this.proc.onFailure?.(error => this.handleFailure(error))
@@ -536,33 +545,52 @@ export class PiAcpSession {
     await this.abortCurrent()
   }
 
-  noteTitle(title: string): void {
-    this.lastTitle = title
+  async publishTitle(
+    title: string | null | undefined = this.title,
+    options: { updatedAt?: string; force?: boolean } = {}
+  ): Promise<void> {
+    const name = title?.trim()
+    if (!name || this.terminalError) return
+    this.title = name
+    if (name !== this.lastTitle || options.force) {
+      this.lastTitle = name
+      this.emit({
+        sessionUpdate: 'session_info_update',
+        title: name,
+        ...(options.updatedAt ? { updatedAt: options.updatedAt } : {})
+      })
+    }
+    await this.flushEmits()
   }
 
-  /**
-   * Forward pi's session name to the client as a thread title. Pi RPC mode emits
-   * no event when the name changes (e.g. set by an extension), so callers poll
-   * this after each turn.
-   */
+  private async publishSessionName(name: unknown, fromEvent = false): Promise<void> {
+    if (typeof name !== 'string' || !name.trim() || this.terminalError) return
+    this.nameVersion++
+    if (fromEvent) this.nameEventVersion++
+    await this.publishTitle(name, { updatedAt: new Date().toISOString() })
+  }
+
+  async setSessionName(name: string): Promise<void> {
+    const version = this.nameEventVersion
+    await this.proc.setSessionName(name)
+    // Pi normally emits the name before acknowledging the command. Don't replay
+    // it over a newer extension rename that arrived while waiting for the ACK.
+    if (version === this.nameEventVersion) await this.publishSessionName(name)
+    else await this.flushEmits()
+  }
+
   async syncSessionName(): Promise<void> {
-    let name: string | undefined
+    if (this.terminalError) return
+    const version = this.nameVersion
+    let name: unknown
     try {
       const state = (await this.proc.getState()) as { sessionName?: unknown }
-      name = typeof state?.sessionName === 'string' && state.sessionName.trim() ? state.sessionName : undefined
+      name = state?.sessionName
     } catch {
       return
     }
-
-    if (!name || name === this.lastTitle) return
-    this.lastTitle = name
-
-    this.emit({
-      sessionUpdate: 'session_info_update',
-      title: name,
-      updatedAt: new Date().toISOString()
-    })
-    await this.flushEmits()
+    // A delayed state snapshot must not undo a live rename.
+    if (version === this.nameVersion) await this.publishSessionName(name)
   }
 
   wasCancelRequested(): boolean {
@@ -939,7 +967,18 @@ export class PiAcpSession {
       }
     }
 
+    if (type === 'message_start' || type === 'message_end') {
+      const message = ev.message as { role?: unknown; content?: unknown } | null | undefined
+      if (message?.role === 'user') {
+        void this.publishTitle(this.title ?? titleFromContent(message.content))
+      }
+    }
+
     switch (type) {
+      case 'session_info_changed': {
+        void this.publishSessionName(ev.name, true)
+        break
+      }
       case 'message_end': {
         const outcome = assistantOutcome(ev.message)
         if (outcome) this.turnOutcome = outcome

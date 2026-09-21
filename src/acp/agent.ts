@@ -34,7 +34,7 @@ import { PiTurnError, SessionManager, type PiAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
 import { ClientBridge, clientBridgeEnv, type ClientCapabilities } from './client-bridge.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
-import { listPiSessions, findPiSession, forkPiSessionFile } from './pi-sessions.js'
+import { listPiSessions, findPiSession, forkPiSessionFile, readPiSessionTitle } from './pi-sessions.js'
 import {
   additionalDirectoriesSystemPrompt,
   normalizeAdditionalDirectories,
@@ -246,7 +246,8 @@ export class PiAcpAgent implements ACPAgent {
         conn: this.conn,
         proc,
         fileCommands,
-        clientSupportsFormElicitation: this.clientSupportsFormElicitation
+        clientSupportsFormElicitation: this.clientSupportsFormElicitation,
+        title: readPiSessionTitle(stored.sessionFile)
       })
 
       this.lastSessionCwd = cwd
@@ -437,6 +438,7 @@ export class PiAcpAgent implements ACPAgent {
     // So we must send this *after* the session/new response has been delivered.
     setTimeout(() => {
       void (async () => {
+        await session.publishTitle(undefined, { force: true })
         try {
           const pi = await session.proc.getCommands()
           const { commands, raw } = toAvailableCommandsFromPiGetCommands(pi, { enableSkillCommands })
@@ -562,8 +564,7 @@ export class PiAcpAgent implements ACPAgent {
         }
 
         try {
-          await session.proc.setSessionName(name)
-          session.noteTitle(name)
+          await session.setSessionName(name)
         } catch (e: any) {
           const msg = String(e?.message ?? e)
           const hint = /set_session_name/i.test(msg)
@@ -579,15 +580,6 @@ export class PiAcpAgent implements ACPAgent {
           })
           return { stopReason: 'end_turn' }
         }
-
-        await this.conn.sessionUpdate({
-          sessionId: session.sessionId,
-          update: {
-            sessionUpdate: 'session_info_update',
-            title: name,
-            updatedAt: new Date().toISOString()
-          }
-        })
 
         await this.conn.sessionUpdate({
           sessionId: session.sessionId,
@@ -1016,17 +1008,7 @@ export class PiAcpAgent implements ACPAgent {
 
     // Surface the stored session name (or first-message fallback) as the thread title.
     const piSession = findPiSession(params.sessionId)
-    if (piSession?.title) {
-      session.noteTitle(piSession.title)
-      await this.conn.sessionUpdate({
-        sessionId: session.sessionId,
-        update: {
-          sessionUpdate: 'session_info_update',
-          title: piSession.title,
-          updatedAt: piSession.updatedAt ?? new Date().toISOString()
-        }
-      })
-    }
+    await session.publishTitle(undefined, { updatedAt: piSession?.updatedAt ?? new Date().toISOString() })
 
     // Replay full conversation history.
     const data = (await proc.getMessages()) as any
@@ -1261,17 +1243,10 @@ export class PiAcpAgent implements ACPAgent {
 
     const { configOptions, models, modes } = await this.getRestoredSessionConfiguration(session, session !== active)
     const piSession = findPiSession(params.sessionId)
-    if (piSession?.title) {
-      session.noteTitle(piSession.title)
-      await this.conn.sessionUpdate({
-        sessionId: session.sessionId,
-        update: {
-          sessionUpdate: 'session_info_update',
-          title: piSession.title,
-          updatedAt: piSession.updatedAt ?? new Date().toISOString()
-        }
-      })
-    }
+    await session.publishTitle(undefined, {
+      updatedAt: piSession?.updatedAt ?? new Date().toISOString(),
+      force: true
+    })
 
     const response = { configOptions, models, modes, _meta: { piAcp: { startupInfo: null } } }
     this.deferAvailableCommands(session, getEnableSkillCommands(params.cwd), loadSlashCommands(params.cwd))
@@ -1312,14 +1287,7 @@ export class PiAcpAgent implements ACPAgent {
     })
 
     const { configOptions, models, modes } = await this.getRestoredSessionConfiguration(session)
-    const sourceTitle = findPiSession(params.sessionId)?.title
-    if (sourceTitle) {
-      session.noteTitle(sourceTitle)
-      await this.conn.sessionUpdate({
-        sessionId: session.sessionId,
-        update: { sessionUpdate: 'session_info_update', title: sourceTitle, updatedAt: new Date().toISOString() }
-      })
-    }
+    await session.publishTitle(undefined, { updatedAt: new Date().toISOString() })
 
     const response = {
       sessionId: forked.sessionId,
@@ -1328,6 +1296,7 @@ export class PiAcpAgent implements ACPAgent {
       modes,
       _meta: { piAcp: { startupInfo: null, forkedFrom: params.sessionId } }
     }
+    setTimeout(() => void session.publishTitle(undefined, { force: true }), 0)
     this.deferAvailableCommands(session, getEnableSkillCommands(params.cwd), loadSlashCommands(params.cwd))
     return response
   }
