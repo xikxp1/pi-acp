@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 
 import { PiAcpAgent } from '../../src/acp/agent.js'
+import { SessionStore } from '../../src/acp/session-store.js'
 import { forkPiSessionFile, listPiSessions } from '../../src/acp/pi-sessions.js'
 import { FakeAgentSideConnection, asAgentConn } from '../helpers/fakes.js'
 import { PiRpcProcess } from '../../src/pi-rpc/process.js'
@@ -105,6 +106,7 @@ test('PiAcpAgent: unstable_forkSession spawns a new pi on the copied file and re
     await withAgentDir(root, async () => {
       const conn = new FakeAgentSideConnection()
       const agent = new PiAcpAgent(asAgentConn(conn))
+      Object.defineProperty(agent, 'store', { value: new SessionStore(join(root, 'session-map.json')) })
 
       const res = await agent.unstable_forkSession({ sessionId: 'sess-1', cwd: '/tmp/project', mcpServers: [] } as any)
 
@@ -113,6 +115,8 @@ test('PiAcpAgent: unstable_forkSession spawns a new pi on the copied file and re
       assert.equal(spawned.length, 1)
       assert.notEqual(spawned[0], sessionFile)
       assert.ok(spawned[0]!.endsWith(`_${res.sessionId}.jsonl`))
+      const header = JSON.parse(readFileSync(spawned[0]!, 'utf8').split('\n')[0]!)
+      assert.equal(header.parentSession, sessionFile)
       assert.equal((res as any)._meta.piAcp.forkedFrom, 'sess-1')
       assert.ok('configOptions' in res)
 
@@ -135,6 +139,7 @@ test('PiAcpAgent: unstable_forkSession rejects unknown sessions and relative cwd
   const { root } = setupSessionsDir()
   await withAgentDir(root, async () => {
     const agent = new PiAcpAgent(asAgentConn(new FakeAgentSideConnection()))
+    Object.defineProperty(agent, 'store', { value: new SessionStore(join(root, 'session-map.json')) })
     await assert.rejects(
       agent.unstable_forkSession({ sessionId: 'nope', cwd: '/tmp/project', mcpServers: [] } as any),
       (err: any) => err.code === -32602 && /Unknown sessionId/.test(String(err.data))
