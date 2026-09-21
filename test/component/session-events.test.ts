@@ -647,7 +647,7 @@ test('PiAcpSession: preserves ordering when auto_retry_start is interleaved with
   )
 })
 
-test('PiAcpSession: emits streamed tool locations from pi path args', async () => {
+test('PiAcpSession: waits for streamed tool paths to complete before emitting locations', async () => {
   const conn = new FakeAgentSideConnection()
   const proc = new FakePiRpcProcess()
 
@@ -655,15 +655,28 @@ test('PiAcpSession: emits streamed tool locations from pi path args', async () =
     sessionId: 's1',
     cwd: process.cwd(),
     mcpServers: [],
-    proc: proc as any,
+    proc: proc as unknown as PiRpcProcess,
     conn: asAgentConn(conn),
     fileCommands: []
   })
 
+  const paths = ['/', '/tmp', '/tmp/test.txt']
+  for (const [index, path] of paths.entries()) {
+    proc.emit({
+      type: 'message_update',
+      assistantMessageEvent: {
+        type: index === 0 ? 'toolcall_start' : 'toolcall_delta',
+        partial: {
+          content: [{ type: 'toolCall', id: 't1', name: 'write', arguments: { path } }]
+        },
+        contentIndex: 0
+      }
+    })
+  }
   proc.emit({
     type: 'message_update',
     assistantMessageEvent: {
-      type: 'toolcall_start',
+      type: 'toolcall_end',
       toolCall: {
         id: 't1',
         name: 'write',
@@ -674,9 +687,21 @@ test('PiAcpSession: emits streamed tool locations from pi path args', async () =
 
   await new Promise(r => setTimeout(r, 0))
 
-  assert.equal(conn.updates.length, 1)
-  assert.equal(conn.updates[0]!.update.sessionUpdate, 'tool_call')
-  assert.deepEqual((conn.updates[0]!.update as any).locations, [{ path: '/tmp/test.txt' }])
+  assert.equal(conn.updates.length, 4)
+  for (const [index, path] of paths.entries()) {
+    const update = conn.updates[index]!.update
+    assert.ok(update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update')
+    assert.equal(update.sessionUpdate, index === 0 ? 'tool_call' : 'tool_call_update')
+    assert.equal(update.toolCallId, 't1')
+    assert.equal(update.status, 'pending')
+    assert.equal(update.locations, undefined)
+    assert.deepEqual(update.rawInput, { path })
+    assert.equal(update.title, `write ${path}`)
+  }
+  const completed = conn.updates[3]!.update
+  assert.equal(completed.sessionUpdate, 'tool_call_update')
+  assert.deepEqual(completed.locations, [{ path: '/tmp/test.txt' }])
+  assert.deepEqual(completed.rawInput, { path: '/tmp/test.txt', content: 'hello' })
 })
 
 test('PiAcpSession: emits edit tool line when oldText matches uniquely', async () => {
