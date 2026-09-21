@@ -48,7 +48,10 @@ extension `confirm`/`select` UI requests.
 The adapter emits throttled `usage_update` notifications during streaming
 (`message_update`/`message_end`, context size from `get_state`) and a final one on
 `agent_settled` from `get_session_stats`, and attaches `usage` to the `session/prompt`
-response (src/acp/session.ts, src/acp/translate/usage.ts).
+response (src/acp/session.ts, src/acp/translate/usage.ts). All-zero provider usage
+snapshots are ignored so unavailable streaming measurements do not reset the
+context indicator. Real decreases and authoritative final zero readings are still
+reported.
 
 ### 2. Permission gating for core tools
 

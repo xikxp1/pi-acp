@@ -28,6 +28,8 @@ export function streamedUsageUpdate(event: unknown, size: number | undefined): U
   const { input, output, cacheRead, cacheWrite, totalTokens } = usage
   if (!tokens(input) || !tokens(output) || !tokens(cacheRead) || !tokens(cacheWrite)) return undefined
   const sum = input + output + cacheRead + cacheWrite
+  // Providers may leave usage at zero until completion; this isn't an empty context.
+  if (sum === 0) return undefined
   const used = totalTokens === sum ? totalTokens : sum
   return { used, size }
 }

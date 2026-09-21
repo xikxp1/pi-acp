@@ -26,6 +26,40 @@ test('maps latest streamed snapshot without accumulating snapshots or reporting 
   assert.equal(streamedUsageUpdate({ type: 'message_end', message: { role: 'toolResult', usage } }, 200000), undefined)
 })
 
+test('skips all-zero provider placeholders in streaming and final assistant messages', () => {
+  const empty = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 }
+  for (const counts of [empty, { ...empty, totalTokens: undefined }, { ...empty, totalTokens: 999 }]) {
+    assert.equal(streamedUsageUpdate({ type: 'message_update', usage: counts }, 200000), undefined)
+    assert.equal(
+      streamedUsageUpdate({ type: 'message_end', message: { role: 'assistant', usage: counts } }, 200000),
+      undefined
+    )
+  }
+})
+
+test('preserves nonzero streaming measurements even when some token categories are zero', () => {
+  const empty = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 }
+  for (const field of ['input', 'output', 'cacheRead', 'cacheWrite']) {
+    assert.deepEqual(streamedUsageUpdate({ type: 'message_update', usage: { ...empty, [field]: 10 } }, 200000), {
+      used: 10,
+      size: 200000
+    })
+  }
+})
+
+test('preserves authoritative zero context and zero session totals', () => {
+  assert.deepEqual(sessionStatsUsageUpdate({ contextUsage: { tokens: 0, contextWindow: 200000 }, cost: 0 }), {
+    used: 0,
+    size: 200000,
+    cost: { amount: 0, currency: 'USD' }
+  })
+  assert.deepEqual(sessionStatsUsage({ tokens: { input: 0, output: 0, total: 0 } }), {
+    totalTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0
+  })
+})
+
 test('maps final current context independently from cumulative session tokens', () => {
   assert.deepEqual(sessionStatsUsageUpdate(stats), { used: 160, size: 200000, cost: { amount: 0.5, currency: 'USD' } })
   assert.deepEqual(sessionStatsUsageUpdate({ ...stats, cost: 0 }), {
