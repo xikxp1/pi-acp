@@ -753,6 +753,10 @@ export class PiAcpSession {
     return this.agentUnsettled || this.compacting
   }
 
+  get busy(): boolean {
+    return Boolean(this.piBusy || this.pendingTurn || this.turnQueue.length || this.aborting || this.reconciling)
+  }
+
   private publishActivity(): void {
     const activity = {
       queueDepth: this.turnQueue.length,

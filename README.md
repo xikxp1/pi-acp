@@ -163,6 +163,7 @@ Loaded from:
 - `/name <name>` – set session display name
 - `/queue all|one-at-a-time` – set pi queue mode (unstable feature)
 - `/changelog` – print the installed pi changelog (best-effort)
+- `/reload` – restart the session's pi process to reload settings, extensions, skills, prompts, and context files (refused while the agent is running)
 - `/steering` - maps to `pi` Steering Mode, get/set
 - `/follow-up` - pats to `pi` Follow-up Mode, get/set
 

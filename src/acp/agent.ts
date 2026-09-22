@@ -114,6 +114,10 @@ function builtinAvailableCommands(): AvailableCommand[] {
     {
       name: 'changelog',
       description: 'Show pi changelog'
+    },
+    {
+      name: 'reload',
+      description: 'Restart pi to reload settings, extensions, skills, prompts, and context files'
     }
   ]
 }
@@ -883,6 +887,15 @@ export class PiAcpAgent implements ACPAgent {
         return { stopReason: 'end_turn' }
       }
 
+      if (cmd === 'reload') {
+        const text = await this.reloadSession(session)
+        await this.conn.sessionUpdate({
+          sessionId: session.sessionId,
+          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }
+        })
+        return { stopReason: 'end_turn' }
+      }
+
       if (cmd === 'autocompact') {
         const mode = (args[0] ?? 'toggle').toLowerCase()
         let enabled: boolean | null = null
@@ -1161,6 +1174,29 @@ export class PiAcpAgent implements ACPAgent {
     this.deferAvailableCommands(session, enableSkillCommands, fileCommands)
 
     return response
+  }
+
+  private async reloadSession(session: PiAcpSession): Promise<string> {
+    if (session.busy) return 'Cannot reload while the agent is running. Cancel or wait for it to finish first.'
+
+    const { sessionId, cwd, mcpServers, additionalDirectories } = session
+    this.sessions.close(sessionId)
+
+    let reloaded: PiAcpSession
+    try {
+      reloaded = await this.restoreSession(sessionId, { cwd, mcpServers, additionalDirectories })
+    } catch (e) {
+      return `Reload failed: ${e instanceof Error ? e.message : String(e)}`
+    }
+
+    try {
+      await emitConfigOptionsUpdate(this.conn, sessionId, reloaded.proc)
+    } catch {
+      // Config refresh is best-effort; the new process is already running.
+    }
+    this.deferAvailableCommands(reloaded, getEnableSkillCommands(cwd), loadSlashCommands(cwd))
+
+    return 'Reloaded settings, extensions, skills, prompts, and context files.'
   }
 
   private async getRestoredSessionConfiguration(session: PiAcpSession, closeOnFailure = true) {
