@@ -235,14 +235,22 @@ suggestions, `nes/*`), provider management (`providers/*`), and editor document-
 notifications (`document/didOpen` etc.). Revisit once stabilized or once Zed adopts
 them for external agents.
 
-### 18. Native subagent sessions — BLOCKED UPSTREAM (track)
+### 18. Native subagent sessions - local bridge implemented; standard API pending
 
-Today subagent output is display-only: the companion `pi-acp-subagents` extension renders
-`@tintinweb/pi-subagents` runs as expandable tool cards (`src/acp/translate/subagents.ts`).
-There is no parent/child session linkage, no per-child permission routing, and no
-replay of live cards on `session/load`.
+The coordinated local `pi-subagents` package and Zed fork now support persistent,
+inspect-only child sessions through bilateral
+`_meta["zed.dev/subagent-sessions"] = {"version":1}` negotiation. The original delegation
+call links to a child session with live structured output, history replay, and child-only
+cancellation. Zed renders loaded children in a collapsible sidebar tree. See
+[Persistent subagent inspection](../README.md#persistent-subagent-inspection) for the
+contract and limitations. Independent child prompts, execution resumption after restart,
+and per-child interactive permission routing are not implemented.
 
-Upstream state (checked 2026-09-11):
+Non-negotiating clients and the legacy `pi-acp-subagents` companion retain display-only
+cards (`src/acp/translate/subagents.ts`); those cards remain ephemeral.
+
+The standard ACP API is separate from this local bridge. Historical upstream state
+(checked 2026-09-11, not revalidated for the local implementation):
 
 - ACP draft RFD [agent-client-protocol#1992](https://github.com/agentclientprotocol/agent-client-protocol/pull/1992)
   (open, ~15 unresolved review threads). Shape: bilateral negotiation
@@ -264,10 +272,9 @@ Upstream state (checked 2026-09-11):
   Both keep a legacy tool-call fallback when the capability is not negotiated.
 - SDK: released `@agentclientprotocol/sdk` (0.26.0) strips the draft `subagents` fields.
   JetBrains AIR bridges this with `_meta.jetbrains.air.capabilities = ["nativeSubagentSessions"]`.
-- Zed: `client_capabilities_for_agent` (`crates/agent_servers/src/acp.rs`) advertises no
-  `subagents` capability. The `subagent_session_info` `_meta` key and
-  `tool_call_for_subagent` navigation in `crates/acp_thread` serve Zed's native
-  `spawn_agent` tool only, not external ACP agents. Demand tracked in
+- Upstream Zed at that check advertised no standard `subagents` capability. The local
+  fork now negotiates the metadata bridge and extends `subagent_session_info` handling
+  to external ACP agents. Upstream demand tracked in
   [zed#49452](https://github.com/zed-industries/zed/discussions/49452),
   [zed#54602](https://github.com/zed-industries/zed/issues/54602),
   [zed#55809](https://github.com/zed-industries/zed/issues/55809).
@@ -275,10 +282,10 @@ Upstream state (checked 2026-09-11):
   background resumes only; workflow-owned and nested children are excluded. Per-child
   permission routing would also need child `confirm`/`select` requests surfaced.
 
-Waiting on, in order: RFD acceptance → SDK exposing the fields → Zed sending the client
-capability. Plan when unblocked: keep the tool-card fallback and add an opt-in native path
-gated on `clientCapabilities.subagents` (mirroring codex-acp). Hold until the
-single-vs-two-notification question is settled, as that is the part most likely to change.
+Standard-protocol migration still depends on RFD acceptance, SDK support, and client
+adoption. Keep the tool-card fallback and the explicitly negotiated local bridge separate
+from any future `clientCapabilities.subagents` implementation; the draft notification
+shape must not be assumed stable.
 
 ## Known Zed-specific quirks (not protocol gaps)
 

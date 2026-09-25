@@ -94,7 +94,8 @@ test('PiAcpAgent: prompt auto-restores a missing session from SessionStore', asy
           PI_ACP_FS_SOCKET: undefined,
           PI_ACP_FS_CAPS: undefined,
           PI_ACP_TERMINAL: undefined,
-          PI_ACP_ADDITIONAL_DIRECTORIES: '["/tmp/lib"]'
+          PI_ACP_ADDITIONAL_DIRECTORIES: '["/tmp/lib"]',
+          PI_ACP_SUBAGENT_SESSIONS: '0'
         },
         appendSystemPrompt: spawnCalls[0].appendSystemPrompt,
         onDispose: spawnCalls[0].onDispose
@@ -199,7 +200,8 @@ test('PiAcpAgent: setSessionConfigOption auto-restores via pi session discovery 
           PI_ACP_FS_SOCKET: undefined,
           PI_ACP_FS_CAPS: undefined,
           PI_ACP_TERMINAL: undefined,
-          PI_ACP_ADDITIONAL_DIRECTORIES: '[]'
+          PI_ACP_ADDITIONAL_DIRECTORIES: '[]',
+          PI_ACP_SUBAGENT_SESSIONS: '0'
         },
         appendSystemPrompt: undefined,
         onDispose: spawnCalls[0].onDispose

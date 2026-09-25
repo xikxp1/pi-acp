@@ -32,6 +32,7 @@ import {
 import { getAuthMethods } from './auth.js'
 import { PiTurnError, SessionManager, type PiAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
+import { SubagentSessions, SUBAGENT_CAPABILITY, supportsSubagentSessions } from './subagent-sessions.js'
 import { ClientBridge, clientBridgeEnv, type ClientCapabilities } from './client-bridge.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
 import { listPiSessions, findPiSession, forkPiSessionFile, readPiSessionTitle } from './pi-sessions.js'
@@ -144,6 +145,7 @@ export class PiAcpAgent implements ACPAgent {
   private readonly sessions = new SessionManager()
   private readonly store = new SessionStore()
   private readonly restoringSessions = new Map<string, Promise<PiAcpSession>>()
+  private readonly subagentSessions: SubagentSessions
 
   dispose(): void {
     this.sessions.disposeAll()
@@ -157,6 +159,7 @@ export class PiAcpAgent implements ACPAgent {
 
   constructor(conn: AgentSideConnection, _config?: unknown) {
     this.conn = conn
+    this.subagentSessions = new SubagentSessions(conn)
     void _config
   }
 
@@ -180,6 +183,7 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   private findStoredSession(sessionId: string): { cwd: string; sessionFile: string } | null {
+    this.subagentSessions.assertRoot(sessionId)
     const stored = this.store.get(sessionId)
     if (stored?.cwd && stored?.sessionFile) {
       return { cwd: stored.cwd, sessionFile: stored.sessionFile }
@@ -204,6 +208,7 @@ export class PiAcpAgent implements ACPAgent {
     sessionId: string,
     opts?: { cwd?: string; mcpServers?: LoadSessionRequest['mcpServers']; additionalDirectories?: string[] }
   ): Promise<PiAcpSession> {
+    this.subagentSessions.assertRoot(sessionId)
     const existing = this.sessions.maybeGet(sessionId)
     if (existing) return existing
 
@@ -230,7 +235,10 @@ export class PiAcpAgent implements ACPAgent {
           cwd,
           sessionPath: stored.sessionFile,
           piCommand: process.env.PI_ACP_PI_COMMAND,
-          env: clientBridgeEnv(bridge, additionalDirectories),
+          env: {
+            ...clientBridgeEnv(bridge, additionalDirectories),
+            PI_ACP_SUBAGENT_SESSIONS: this.subagentSessions.enabled ? '1' : '0'
+          },
           appendSystemPrompt: additionalDirectoriesSystemPrompt(additionalDirectories),
           onDispose: () => bridge?.close()
         })
@@ -251,6 +259,7 @@ export class PiAcpAgent implements ACPAgent {
         proc,
         fileCommands,
         clientSupportsFormElicitation: this.clientSupportsFormElicitation,
+        subagentSessions: this.subagentSessions,
         title: readPiSessionTitle(stored.sessionFile)
       })
 
@@ -274,6 +283,7 @@ export class PiAcpAgent implements ACPAgent {
     const supportedVersion = 1
     const requested = params.protocolVersion
 
+    this.subagentSessions.enabled = supportsSubagentSessions(params.clientCapabilities?._meta)
     this.clientSupportsFormElicitation = Boolean(params.clientCapabilities?.elicitation?.form)
     this.clientCapabilities = {
       read: Boolean(params.clientCapabilities?.fs?.readTextFile),
@@ -294,6 +304,7 @@ export class PiAcpAgent implements ACPAgent {
         supportsTerminalAuthMeta: (params as any)?.clientCapabilities?._meta?.['terminal-auth'] === true
       }),
       agentCapabilities: {
+        ...(this.subagentSessions.enabled ? { _meta: { [SUBAGENT_CAPABILITY]: { version: 1 } } } : {}),
         loadSession: true,
         mcpCapabilities: { http: false, sse: false },
         promptCapabilities: {
@@ -333,7 +344,8 @@ export class PiAcpAgent implements ACPAgent {
       fileCommands,
       piCommand: process.env.PI_ACP_PI_COMMAND,
       clientCapabilities: this.clientCapabilities,
-      clientSupportsFormElicitation: this.clientSupportsFormElicitation
+      clientSupportsFormElicitation: this.clientSupportsFormElicitation,
+      subagentSessions: this.subagentSessions
     })
 
     // Fetch state + models once (parallel) to reduce startup latency.
@@ -947,6 +959,10 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async cancel(params: CancelNotification): Promise<void> {
+    if (this.subagentSessions.isChildId(params.sessionId)) {
+      this.subagentSessions.cancel(params.sessionId)
+      return
+    }
     const session = this.sessions.maybeGet(params.sessionId)
     if (!session) return
     await session.cancel()
@@ -986,6 +1002,10 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async loadSession(params: LoadSessionRequest): Promise<LoadSessionResponse> {
+    if (this.subagentSessions.isChildId(params.sessionId)) {
+      await this.subagentSessions.load(params.sessionId)
+      return { configOptions: [] }
+    }
     if (!isAbsolute(params.cwd)) {
       throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
     }
@@ -1030,6 +1050,35 @@ export class PiAcpAgent implements ACPAgent {
     // Assistant messages carry tool-call arguments; remember them so historic
     // tool results can be titled like live ones.
     const toolCallArgs = new Map<string, unknown>()
+    const historicalSubagents = this.subagentSessions.restoreHistory(session.sessionId, params.cwd, stored.sessionFile)
+    const replayedSubagents = new Set<string>()
+    const replaySubagent = async (block: { id: string; name: string; arguments: unknown }) => {
+      const link = this.subagentSessions.link(session.sessionId, block.id)
+      if (!link || replayedSubagents.has(block.id)) return
+      replayedSubagents.add(block.id)
+      toolCallArgs.set(block.id, block.arguments)
+      await this.conn.sessionUpdate({
+        sessionId: session.sessionId,
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: block.id,
+          title: toToolTitle(block.name, block.arguments, params.cwd),
+          kind: toToolKind(block.name),
+          status: this.subagentSessions.toolStatus(session.sessionId, block.id) ?? 'failed',
+          rawInput: block.arguments,
+          _meta: link
+        }
+      })
+    }
+    const projectedCalls = new Set<string>()
+    for (const message of messages) {
+      if (message?.role !== 'assistant' || !Array.isArray(message.content)) continue
+      for (const block of message.content)
+        if (block?.type === 'toolCall' && typeof block.id === 'string') projectedCalls.add(block.id)
+    }
+    // Compaction omits old delegations from get_messages, but not from the
+    // selected persisted branch. Replay those links in original branch order.
+    for (const block of historicalSubagents.values()) if (!projectedCalls.has(block.id)) await replaySubagent(block)
 
     for (const m of messages) {
       const role = String(m?.role ?? '')
@@ -1088,6 +1137,11 @@ export class PiAcpAgent implements ACPAgent {
             }
           })
         }
+        for (const block of Array.isArray(m.content) ? m.content : []) {
+          if (block?.type !== 'toolCall' || typeof block.id !== 'string') continue
+          const original = historicalSubagents.get(block.id)
+          if (original) await replaySubagent(original)
+        }
       }
 
       if (role === 'toolResult') {
@@ -1129,19 +1183,21 @@ export class PiAcpAgent implements ACPAgent {
         // Create a synthetic ACP tool call to render historic tool usage.
         const args = toolCallArgs.get(toolCallId)
         const locations = toToolCallLocations(args, params.cwd)
-        await this.conn.sessionUpdate({
-          sessionId: session.sessionId,
-          update: {
-            sessionUpdate: 'tool_call',
-            toolCallId,
-            title: toToolTitle(toolName, args ?? m?.details, params.cwd),
-            kind: toToolKind(toolName),
-            status: 'completed',
-            locations,
-            rawInput: args ?? null,
-            rawOutput: m
-          }
-        })
+        if (!replayedSubagents.has(toolCallId))
+          await this.conn.sessionUpdate({
+            sessionId: session.sessionId,
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId,
+              _meta: this.subagentSessions.link(session.sessionId, toolCallId),
+              title: toToolTitle(toolName, args ?? m?.details, params.cwd),
+              kind: toToolKind(toolName),
+              status: 'completed',
+              locations,
+              rawInput: args ?? null,
+              rawOutput: m
+            }
+          })
 
         const diff = isError ? undefined : historicDiffContent(toolName, args)
         const text = toolResultToText(m)
@@ -1152,6 +1208,7 @@ export class PiAcpAgent implements ACPAgent {
             sessionUpdate: 'tool_call_update',
             toolCallId,
             ...(title ? { title } : {}),
+            _meta: this.subagentSessions.link(session.sessionId, toolCallId),
             status: isError ? 'failed' : 'completed',
             content: diff ?? (text ? [{ type: 'content', content: { type: 'text', text } }] : null),
             ...(diff ? {} : { rawOutput: m })
@@ -1245,6 +1302,10 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async resumeSession(params: ResumeSessionRequest): Promise<ResumeSessionResponse> {
+    if (this.subagentSessions.isChildId(params.sessionId)) {
+      await this.subagentSessions.load(params.sessionId)
+      return { configOptions: [] }
+    }
     if (!isAbsolute(params.cwd)) {
       throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
     }
@@ -1338,6 +1399,10 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async closeSession(params: CloseSessionRequest): Promise<CloseSessionResponse> {
+    if (this.subagentSessions.isChildId(params.sessionId)) {
+      this.subagentSessions.close(params.sessionId)
+      return {}
+    }
     const session = this.sessions.maybeGet(params.sessionId)
     if (session) {
       try {
@@ -1351,6 +1416,7 @@ export class PiAcpAgent implements ACPAgent {
   }
 
   async deleteSession(params: DeleteSessionRequest): Promise<DeleteSessionResponse> {
+    this.subagentSessions.assertRoot(params.sessionId)
     const stored = this.store.get(params.sessionId)
     const piSession = findPiSession(params.sessionId)
 

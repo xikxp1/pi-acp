@@ -26,12 +26,13 @@ Expect some minor breaking changes.
   - Without it, live bash output is still rendered in Zed via vendor `_meta.terminal_*` metadata
 - Subagent visibility
   - Displays extension completion messages and descriptive `Agent` tool progress
-  - Live top-level subagent output is available with the manually installed [subagent companion extension](extensions/README.md#subagent-output-extension)
+  - The local `pi-subagents` package supports persistent, live inspect-only child sessions with negotiated Zed support (see below)
+  - Legacy live cards remain available with the [subagent companion extension](extensions/README.md#subagent-output-extension)
 - Session persistence
   - pi stores its own sessions in `~/.pi/agent/sessions/...`
   - `pi-acp` stores a small mapping file at `~/.pi/pi-acp/session-map.json` so `session/load` can reattach to a previous pi session file
   - `session/resume` supports fast reconnect without history replay, reusing active sessions
-  - `session/close` cancels ongoing work and frees runtime resources without deleting saved sessions
+  - `session/close` cancels ongoing root work and frees runtime resources without deleting saved sessions; closing an inspect-only child only unsubscribes its view
   - Pi and extension renames update session titles live. Unnamed sessions display a whitespace-normalized preview of the first user text (up to 80 Unicode code points), including with the startup banner enabled. `/name` and saved names take precedence; restored sessions keep their original title. Fallback previews require no model call and do not write a session name.
 - Slash commands
   - Loads file-based slash commands compatible with pi’s conventions
@@ -212,9 +213,21 @@ New prompts wait in FIFO order until Pi fully settles, including retries, compac
 
 Cancellation clears the adapter's queued prompts and aborts Pi's current run. Messages submitted after cancellation wait for the abort to finish before starting. Independently running background subagents are not stopped by this queue handling and may trigger later continuations.
 
+## Persistent subagent inspection
+
+The coordinated local `pi-subagents` package (not `@tintinweb/pi-subagents`) emits persistent child histories and structured events. It must be installed separately in Pi. Both client and adapter must negotiate `clientCapabilities._meta["zed.dev/subagent-sessions"] = {"version":1}` / `agentCapabilities._meta["zed.dev/subagent-sessions"] = {"version":1}`. The adapter controls `PI_ACP_SUBAGENT_SESSIONS`; do not set it manually.
+
+- The original parent tool call receives `_meta.subagent_session_info = {session_id:"pi-child-<run-uuid>",message_start_index:0}`. There is no duplicate synthetic native tool call or invented end index.
+- Child registration precedes the link. `session/load` replays buffered child messages/tools and subscribes to subsequent updates in order, without spawning Pi. `session_info_update` carries the title and `_meta["zed.dev/subagent-session"] = {parent_session_id,parent_tool_call_id,status}`. Terminal state follows all child output, including when reopening a completed or failed child. Replay delivery failures reject `session/load`; reopening starts a fresh replay.
+- Children are extension-owned and inspect-only. Independent prompting/configuration/forking/deletion is rejected. `session/cancel` targets only the selected live child; `session/close` only unsubscribes. Root cancellation/shutdown stops its foreground children.
+- The extension persists real Pi `session.jsonl`, exact `events.jsonl`, lifecycle state, and a visible text fallback under `<Pi agent directory>/subagents/`. Parent custom entries and tool results preserve links. The adapter persists a private child index under `~/.pi/pi-acp/children/`. Children are excluded from ACP root listings. Saved views reopen after restart; interrupted execution is failed, not restarted. Parent reload recovers original delegation links from the selected persisted branch even after compaction; abandoned branches and forked parents do not acquire those links.
+- Cancellation uses a random, per-run file polled by the owning extension, never a PID or cancellation target restored from metadata. Saved histories contain sensitive model/tool data and remain until manually removed. Native transcript buffering, like root delivery, has no hard backlog limit.
+
+Non-negotiating clients and legacy extensions retain existing v1 `SubagentCards` behavior and ordinary tool progress/results. Legacy cards remain ephemeral, and the legacy companion's workflow/nested-child limitations are unchanged.
+
 ## Limitations
 
-- Live subagent cards require the companion extension and a compatible `@tintinweb/pi-subagents` installation. Workflow-owned/nested agents and Zed's native child-session navigation are not supported. Live transcripts are display-only; session reload replays stored completion messages, not the live cards.
+- Native subagent inspection requires the coordinated local package and a client implementing the negotiated Zed bridge. It does not support independent child conversation or resuming execution after restart.
 - ACP filesystem (`fs/*`) and terminal (`terminal/*`) delegation require the companion `pi-acp-fs` / `pi-acp-terminal` extensions (see [extensions/README.md](extensions/README.md)). Without them pi reads/writes and executes locally, and bash output is rendered through Zed's display-only terminal emulation.
 - MCP servers are accepted in ACP params and stored in session state, but not wired through to pi in this adapter. If you use [pi MCP adapter](https://github.com/nicobailon/pi-mcp-adapter) it will be available in the ACP client.
 - Prompt queuing is implemented in the adapter, independently of pi's steering/follow-up queues (see [Prompt queues and background work](#prompt-queues-and-background-work)).

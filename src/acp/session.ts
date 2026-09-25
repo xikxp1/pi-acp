@@ -15,6 +15,7 @@ import { PiRpcProcess, PiRpcPromptBusyError, PiRpcSpawnError, type PiRpcEvent } 
 import { maybeAuthRequiredError } from './auth-required.js'
 import { SessionStore } from './session-store.js'
 import { titleFromContent } from './session-title.js'
+import type { SubagentSessions } from './subagent-sessions.js'
 import { ClientBridge, clientBridgeEnv, type ClientCapabilities } from './client-bridge.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
 import {
@@ -50,6 +51,7 @@ type SessionCreateParams = {
   piCommand?: string
   clientCapabilities?: ClientCapabilities
   clientSupportsFormElicitation?: boolean
+  subagentSessions?: SubagentSessions
 }
 
 export type StopReason = 'end_turn' | 'cancelled' | 'max_tokens'
@@ -198,7 +200,10 @@ export class SessionManager {
       proc = await PiRpcProcess.spawn({
         cwd: params.cwd,
         piCommand: params.piCommand,
-        env: clientBridgeEnv(bridge, params.additionalDirectories),
+        env: {
+          ...clientBridgeEnv(bridge, params.additionalDirectories),
+          PI_ACP_SUBAGENT_SESSIONS: params.subagentSessions?.enabled ? '1' : '0'
+        },
         appendSystemPrompt: additionalDirectoriesSystemPrompt(params.additionalDirectories ?? []),
         onDispose: () => bridge?.close()
       })
@@ -238,6 +243,7 @@ export class SessionManager {
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
       clientSupportsFormElicitation: params.clientSupportsFormElicitation,
+      subagentSessions: params.subagentSessions,
       title: typeof state?.sessionName === 'string' ? state.sessionName : null
     })
     ref.session = session
@@ -272,6 +278,7 @@ export class SessionManager {
       conn: params.conn,
       fileCommands: params.fileCommands ?? [],
       clientSupportsFormElicitation: params.clientSupportsFormElicitation,
+      subagentSessions: params.subagentSessions,
       title: params.title
     })
 
@@ -330,6 +337,7 @@ export class PiAcpSession {
   // and clients may hide progress if we ever downgrade back to `pending`.
   private currentToolCalls = new Map<string, 'pending' | 'in_progress'>()
   private readonly subagentCards = new SubagentCards()
+  private readonly subagentSessions?: SubagentSessions
   private readonly subagentToolCalls = new Set<string>()
 
   // pi can emit multiple `turn_end` and `agent_end` events for a single user prompt
@@ -374,6 +382,7 @@ export class PiAcpSession {
     conn: AgentSideConnection
     fileCommands?: FileSlashCommand[]
     clientSupportsFormElicitation?: boolean
+    subagentSessions?: SubagentSessions
     title?: string | null
   }) {
     this.sessionId = opts.sessionId
@@ -385,6 +394,7 @@ export class PiAcpSession {
     this.fileCommands = opts.fileCommands ?? []
     this.clientSupportsFormElicitation = opts.clientSupportsFormElicitation ?? false
     this.title = opts.title?.trim() || undefined
+    this.subagentSessions = opts.subagentSessions
 
     this.unsubscribeEvents = this.proc.onEvent(ev => this.handlePiEvent(ev))
     const unsubscribe = this.proc.onFailure?.(error => this.handleFailure(error))
@@ -432,6 +442,7 @@ export class PiAcpSession {
     this.unsubscribeFailure?.()
     this.unsubscribeEvents = undefined
     this.unsubscribeFailure = undefined
+    this.subagentSessions?.failParent(this.sessionId)
     for (const update of this.subagentCards.fail()) this.emit(update)
     this.subagentToolCalls.clear()
     void this.flushEmits().then(() => this.failTurns(error))
@@ -655,6 +666,10 @@ export class PiAcpSession {
   private emit(update: SessionUpdate): void {
     // Non-delta updates are ordering boundaries, not part of the model's text batch.
     this.flushDeltaBuffer()
+    if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+      const link = this.subagentSessions?.link(this.sessionId, update.toolCallId)
+      if (link) update = { ...update, _meta: { ...update._meta, ...link } }
+    }
     this.emitImmediate(update)
   }
 
@@ -1248,6 +1263,17 @@ export class PiAcpSession {
       }
 
       case 'extension_ui_request': {
+        if (ev.method === 'setStatus' && ev.statusKey === 'pi-acp:subagent-session') {
+          try {
+            const update = this.subagentSessions?.receive(this.sessionId, this.cwd, ev.statusText, id =>
+              this.subagentToolCalls.has(id)
+            )
+            if (update) this.emit(update)
+          } catch (error) {
+            console.error(`pi-acp: cannot register subagent inspection: ${String(error)}`)
+          }
+          break
+        }
         if (ev.method === 'setStatus' && ev.statusKey === 'pi-acp:subagent') {
           const update = this.subagentCards.update(ev.statusText)
           if (update) this.emit(update)

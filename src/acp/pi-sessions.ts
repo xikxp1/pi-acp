@@ -105,7 +105,7 @@ function readTail(path: string, tailBytes = DEFAULT_TAIL_BYTES): string {
 function parseSessionHeader(firstLine: string): { sessionId: string; cwd: string } | null {
   try {
     const obj = JSON.parse(firstLine) as any
-    if (obj?.type !== 'session') return null
+    if (obj?.type !== 'session' || obj.piSubagent === true) return null
     const sessionId = typeof obj?.id === 'string' ? obj.id : null
     const cwd = typeof obj?.cwd === 'string' ? obj.cwd : null
     if (!sessionId || !cwd) return null
@@ -332,6 +332,44 @@ export function listPiSessions(): PiSessionListItem[] {
   })
 
   return items
+}
+
+export function readPiSessionBranch(path: string): Record<string, unknown>[] {
+  const entries = new Map<string, Record<string, unknown>>()
+  let leaf: Record<string, unknown> | undefined
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    let value: unknown
+    try {
+      value = JSON.parse(line)
+    } catch {
+      // Pi also skips malformed lines (including interrupted appends).
+      continue
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+    const entry = value as Record<string, unknown>
+    if (entry.type === 'session') continue
+    if (
+      typeof entry.id !== 'string' ||
+      !entry.id ||
+      entries.has(entry.id) ||
+      (entry.parentId !== null && typeof entry.parentId !== 'string')
+    )
+      throw new Error('Invalid Pi session tree entry')
+    entries.set(entry.id, entry)
+    leaf = entry
+  }
+  // On cold open Pi selects the last persisted entry, not every entry in the file.
+  const branch: Record<string, unknown>[] = []
+  const visited = new Set<unknown>()
+  while (leaf) {
+    if (visited.has(leaf.id)) throw new Error('Cycle in Pi session tree')
+    visited.add(leaf.id)
+    branch.push(leaf)
+    if (leaf.parentId === null) break
+    leaf = entries.get(leaf.parentId as string)
+    if (!leaf) throw new Error('Missing parent in Pi session tree')
+  }
+  return branch.reverse()
 }
 
 export function findPiSession(sessionId: string): PiSessionListItem | null {
