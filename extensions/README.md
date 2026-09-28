@@ -21,6 +21,8 @@ The adapter persists `additionalDirectories` in its session store and passes the
 - Unqualified new files are created under cwd. Absolute paths, `~/` paths, and paths containing `..` keep their normal meaning and are not searched across roots.
 - Resolution happens once before the built-in tool executes, so reads, image detection, edits, directory creation, and writes use the same target. Bash/search tools are unchanged and need absolute paths for extra roots.
 
+The adapter also tells the model about extra roots through `--append-system-prompt`. Pi skips its own `APPEND_SYSTEM.md` discovery when that flag is present, so the adapter first passes the file pi would have picked: a trusted `<cwd>/.pi/APPEND_SYSTEM.md`, otherwise `<agent-dir>/APPEND_SYSTEM.md` (`PI_CODING_AGENT_DIR` is honored). Project trust is read from `<agent-dir>/trust.json` (nearest entry for cwd or a parent) and `defaultProjectTrust: "always"`. Decisions made by extension `project_trust` handlers are not visible to the adapter, so in that case the global file is used. The file is re-read by pi on `/reload`.
+
 # Client terminal delegation extension
 
 `pi-acp-terminal.ts` runs the built-in `bash` tool in a real ACP client terminal (`terminal/create`, `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, `terminal/release`) instead of a local child process. In Zed, each command appears as a live terminal inside the tool card, using the standard ACP `{type:"terminal"}` content rather than the Zed-only `_meta.terminal_*` emulation, and the client can stop the command itself. Install with:

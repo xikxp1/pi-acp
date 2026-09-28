@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
+import { appendSystemPromptArgs } from './append-system-prompt.js'
 import { getPiCommand, shouldUseShellForPiCommand } from './command.js'
 
 export class PiRpcSpawnError extends Error {
@@ -194,14 +195,15 @@ export class PiRpcProcess {
     // - themes are irrelevant in rpc mode and can be noisy/slow to load.
     // Keep extensions + prompt templates enabled because ACP users may rely on them
     // (e.g. MCP extensions, prompt templates for workflows).
+    const env = { ...process.env, ...params.env, PI_ACP_SUBAGENTS: '1', PI_ACP_ASK_USER: '1' }
     const args = ['--mode', 'rpc', '--no-themes']
     if (params.sessionPath) args.push('--session', params.sessionPath)
-    if (params.appendSystemPrompt) args.push('--append-system-prompt', params.appendSystemPrompt)
+    if (params.appendSystemPrompt) args.push(...appendSystemPromptArgs(params.appendSystemPrompt, params.cwd, env))
 
     const child = spawn(cmd, args, {
       cwd: params.cwd,
       stdio: 'pipe',
-      env: { ...process.env, ...params.env, PI_ACP_SUBAGENTS: '1', PI_ACP_ASK_USER: '1' },
+      env,
       shell: shouldUseShellForPiCommand(cmd)
     })
 
