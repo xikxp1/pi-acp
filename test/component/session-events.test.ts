@@ -278,6 +278,64 @@ test('PiAcpSession: handles extension select via ACP permission request', async 
   assert.deepEqual(proc.extensionUiResponses, [{ id: 'ui-1', value: 'Beta' }])
 })
 
+test('PiAcpSession: multi-line extension prompts use the first line as title and the full prompt as body', async () => {
+  const conn = new FakeAgentSideConnection()
+  conn.nextPermissionResponse = { outcome: { outcome: 'selected', optionId: 'choice-0' } }
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  const prompt = '\n  Which option?  \n\nContext:\n| A | B |\n|---|---|'
+  proc.emit({ type: 'extension_ui_request', id: 'ui-3', method: 'select', title: prompt, options: ['A', 'B'] })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  const toolCall = (conn.permissionRequests[0] as any).toolCall
+  assert.equal(toolCall.title, 'Which option?')
+  assert.deepEqual(toolCall.content, [
+    { type: 'content', content: { type: 'text', text: 'Which option?  \n\nContext:\n| A | B |\n|---|---|' } }
+  ])
+  assert.equal(toolCall.rawInput.title, prompt)
+})
+
+test('PiAcpSession: extension confirm message is shown in the permission card body', async () => {
+  const conn = new FakeAgentSideConnection()
+  conn.nextPermissionResponse = { outcome: { outcome: 'selected', optionId: 'yes' } }
+  const proc = new FakePiRpcProcess()
+
+  new PiAcpSession({
+    sessionId: 's1',
+    cwd: process.cwd(),
+    mcpServers: [],
+    proc: proc as any,
+    conn: asAgentConn(conn),
+    fileCommands: []
+  })
+
+  proc.emit({
+    type: 'extension_ui_request',
+    id: 'ui-4',
+    method: 'confirm',
+    title: 'Clear session?',
+    message: 'All messages will be lost.'
+  })
+
+  await new Promise(r => setTimeout(r, 0))
+
+  const toolCall = (conn.permissionRequests[0] as any).toolCall
+  assert.equal(toolCall.title, 'Clear session?')
+  assert.deepEqual(toolCall.content, [
+    { type: 'content', content: { type: 'text', text: 'All messages will be lost.' } }
+  ])
+})
+
 test('PiAcpSession: handles extension confirm via ACP permission request', async () => {
   const conn = new FakeAgentSideConnection()
   conn.nextPermissionResponse = { outcome: { outcome: 'selected', optionId: 'no' } }

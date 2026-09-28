@@ -1538,20 +1538,33 @@ export class PiAcpSession {
 
 function extensionUiToolCall(id: string, ev: PiRpcEvent) {
   const method = stringProp(ev, 'method') ?? 'ui'
-  const title = stringProp(ev, 'title') ?? `Pi ${method}`
+  const prompt = stringProp(ev, 'title') ?? `Pi ${method}`
+  const title = firstLine(prompt) ?? `Pi ${method}`
+  const message = stringProp(ev, 'message')?.trim()
   const rawInput: Record<string, unknown> = { method }
 
   for (const key of EXTENSION_UI_RAW_INPUT_KEYS) {
     if (Object.hasOwn(ev, key)) rawInput[key] = ev[key]
   }
 
+  // Zed renders tool call titles as a single clipped line; the body renders Markdown in full.
+  const body = [prompt.trim() !== title ? prompt.trim() : undefined, message].filter(Boolean).join('\n\n')
+
   return {
     toolCallId: `pi-ui-${id}`,
     title,
     kind: 'other' as const,
     status: 'pending' as const,
+    ...(body ? { content: [{ type: 'content', content: { type: 'text', text: body } }] as ToolCallContent[] } : {}),
     rawInput
   }
+}
+
+function firstLine(text: string): string | undefined {
+  return text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .find(Boolean)
 }
 
 function stringProp(source: Record<string, unknown>, key: string): string | null {

@@ -29,6 +29,7 @@ Expect some minor breaking changes.
   - The local `pi-subagents` package supports persistent, live inspect-only child sessions with negotiated Zed support (see below)
   - Legacy live cards remain available with the [subagent companion extension](extensions/README.md#subagent-output-extension)
 - `ask_user` decisions
+  - Extension `select`/`confirm` prompts become permission cards whose title is the prompt's first line; the full prompt (e.g. `ask_user` context) and any confirm message are shown as Markdown in the card body
   - With the [ask_user guidance extension](extensions/README.md#ask_user-guidance-extension), the model writes a comparison table, examples, and a recommendation in chat before calling `ask_user`, so the one-line question in Zed's permission card is enough
 - Session persistence
   - pi stores its own sessions in `~/.pi/agent/sessions/...`

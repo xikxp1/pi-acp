@@ -118,7 +118,7 @@ TUI shows a thinking status followed by a Markdown viewer for the latest Q/A. Us
 
 # ask_user guidance extension
 
-`pi-acp-ask-user.ts` makes `ask_user` decisions readable in Zed. Zed shows the question as a single truncated line in the permission card, and pi-ask-user's RPC fallback drops option descriptions. The extension adds `ask_user` tool guidelines that tell the model to put the decision material into its normal chat message before calling the tool:
+`pi-acp-ask-user.ts` makes `ask_user` decisions readable in Zed. The adapter shows the first line of an extension prompt as the permission card title and the full prompt (including `ask_user` context) as Markdown in the card body, but pi-ask-user's RPC fallback drops option descriptions. The extension adds `ask_user` tool guidelines that tell the model to put the decision material into its normal chat message before calling the tool:
 
 - a short situation summary
 - a Markdown comparison table with one row per option (what changes, pros, cons/risks, effort)
