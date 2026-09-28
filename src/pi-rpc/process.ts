@@ -201,7 +201,7 @@ export class PiRpcProcess {
     const child = spawn(cmd, args, {
       cwd: params.cwd,
       stdio: 'pipe',
-      env: { ...process.env, ...params.env, PI_ACP_SUBAGENTS: '1' },
+      env: { ...process.env, ...params.env, PI_ACP_SUBAGENTS: '1', PI_ACP_ASK_USER: '1' },
       shell: shouldUseShellForPiCommand(cmd)
     })
 

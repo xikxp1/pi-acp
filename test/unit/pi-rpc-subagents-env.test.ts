@@ -23,7 +23,10 @@ test('PiRpcProcess.spawn opts the child into subagent bridging even when env dis
     t.mock.restoreAll()
     syncBuiltinESMExports()
   })
-  const proc = await bounded(PiRpcProcess.spawn({ cwd: process.cwd(), env: { PI_ACP_SUBAGENTS: '0' } }))
+  const proc = await bounded(
+    PiRpcProcess.spawn({ cwd: process.cwd(), env: { PI_ACP_SUBAGENTS: '0', PI_ACP_ASK_USER: '0' } })
+  )
   t.after(() => proc.dispose())
   assert.equal(options?.env?.PI_ACP_SUBAGENTS, '1')
+  assert.equal(options?.env?.PI_ACP_ASK_USER, '1')
 })

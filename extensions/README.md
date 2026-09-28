@@ -114,6 +114,28 @@ TUI shows a thinking status followed by a Markdown viewer for the latest Q/A. Us
 - Cancellation honors `ctx.signal` when present and aborts on replacement/shutdown. Idle extension commands normally have no `ctx.signal`, so RPC abort / TUI Esc may not cancel the request; `/btw:new <question>` replaces it. A second `/btw` is rejected while one is pending.
 - Print/JSON modes have no notification UI. The supported display modes are TUI and RPC.
 
+# ask_user guidance extension
+
+`pi-acp-ask-user.ts` makes `ask_user` decisions readable in Zed. Zed shows the question as a single truncated line in the permission card, and pi-ask-user's RPC fallback drops option descriptions. The extension adds `ask_user` tool guidelines that tell the model to put the decision material into its normal chat message before calling the tool:
+
+- a short situation summary
+- a Markdown comparison table with one row per option (what changes, pros, cons/risks, effort)
+- a concrete example per option (snippet, command, config, or resulting behavior)
+- a recommendation
+
+The tool call itself then carries only a one-line question, and the option titles match the table rows. Freeform and yes/no questions get a short explanation and an example answer instead of a table.
+
+## Install
+
+```sh
+mkdir -p ~/.pi/agent/extensions
+cp /Users/xikxp1/Projects/pi-acp/extensions/pi-acp-ask-user.ts ~/.pi/agent/extensions/pi-acp-ask-user.ts
+```
+
+Restart the ACP session after installation. Re-copy after updates.
+
+The extension activates only in RPC mode with `PI_ACP_ASK_USER=1`, which pi-acp sets on its subprocesses, so terminal pi is unchanged. It hooks `before_agent_start` and appends to `systemPromptOptions.toolGuidelines.ask_user`. Pi renders tool guidelines only for active tools, so the rules have no effect unless an `ask_user` tool (e.g. `npm:pi-ask-user`) is loaded. The extension does not depend on `--append-system-prompt` or `APPEND_SYSTEM.md`.
+
 # Todo extension
 
 `pi-acp-todo.ts` adds a minimal `todo` tool for planning and tracking multi-step tasks, with a compact TUI checklist. Every call replaces the full list; send `{ "todos": [] }` to clear it. Keep at most one item `in_progress`.
