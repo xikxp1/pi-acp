@@ -118,14 +118,14 @@ TUI shows a thinking status followed by a Markdown viewer for the latest Q/A. Us
 
 # ask_user guidance extension
 
-`pi-acp-ask-user.ts` makes `ask_user` decisions readable in Zed. The adapter shows the first line of an extension prompt as the permission card title and the full prompt (including `ask_user` context) as Markdown in the card body, but pi-ask-user's RPC fallback drops option descriptions. The extension adds `ask_user` tool guidelines that tell the model to put the decision material into its normal chat message before calling the tool:
+`pi-acp-ask-user.ts` makes `ask_user` decisions readable in Zed. The adapter shows the first line of an extension prompt as the permission card title and the full prompt (including `ask_user` context) as Markdown in the card body, but pi-ask-user's RPC fallback drops option descriptions. The extension adds `ask_user` tool guidelines that tell the model to put the decision material into the `context` field, so it always appears in the card (models tend to "write" it only in hidden thinking when asked to put it in the chat message):
 
 - a short situation summary
 - a Markdown comparison table with one row per option (what changes, pros, cons/risks, effort)
 - a concrete example per option (snippet, command, config, or resulting behavior)
 - a recommendation
 
-The tool call itself then carries only a one-line question, and the option titles match the table rows. Freeform and yes/no questions get a short explanation and an example answer instead of a table.
+The context must be self-contained, without pointers to text "above". The question stays one line, and the option titles match the table rows. Freeform and yes/no questions get a short explanation and an example answer in the context instead of a table.
 
 ## Install
 
