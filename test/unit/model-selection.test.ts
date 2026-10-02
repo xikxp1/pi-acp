@@ -38,7 +38,8 @@ function fixture(models: unknown = catalog) {
     proc,
     async refreshContextWindow() {
       contextRefreshes++
-    }
+    },
+    async publishContextUsage() {}
   }
   const agent = new PiAcpAgent(asAgentConn(conn))
   Object.defineProperty(agent, 'sessions', {

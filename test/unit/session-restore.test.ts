@@ -150,7 +150,10 @@ test('PiAcpAgent: setSessionConfigOption auto-restores via pi session discovery 
     sessionId,
     cwd: params.cwd,
     proc: params.proc,
-    async refreshContextWindow() {}
+    async refreshContextWindow() {},
+    async publishContextUsage() {
+      // Context usage publishing is covered in test/unit/context-usage.test.ts.
+    }
   }))
 
   const originalSpawn = PiRpcProcess.spawn
@@ -158,13 +161,13 @@ test('PiAcpAgent: setSessionConfigOption auto-restores via pi session discovery 
     spawnCalls.push(params)
     return {
       onEvent: () => () => {},
+      getAvailableThinkingLevels: async () => ['medium'],
       getAvailableModels: async () => ({
         models: [
           { provider: 'test', id: 'alpha', name: 'Alpha' },
           { provider: 'test', id: 'beta', name: 'Beta' }
         ]
       }),
-      getAvailableThinkingLevels: async () => ['medium'],
       getState: async () => state,
       async setModel(provider: string, modelId: string) {
         setModelCalls.push({ provider, modelId })

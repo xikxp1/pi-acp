@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { StringDecoder } from 'node:string_decoder'
+import crossSpawn from 'cross-spawn'
 import { appendSystemPromptArgs } from './append-system-prompt.js'
 import { getPiCommand, shouldUseShellForPiCommand } from './command.js'
 
@@ -85,6 +86,33 @@ type PiExtensionUiResponse =
 
 export type PiRpcEvent = Record<string, unknown>
 
+/** Maximum wait for an auxiliary context-usage update. */
+export const SESSION_STATS_TIMEOUT_MS = 1_000
+
+/**
+ * Shape of `stats.contextUsage` in pi's `get_session_stats` response.
+ * `tokens` is null while pi has no trustworthy token count (e.g. right after compaction).
+ */
+export type PiContextUsage = {
+  tokens?: number | null
+  contextWindow?: number | null
+}
+
+export type PiSessionStats = {
+  sessionId?: string
+  sessionFile?: string
+  totalMessages?: number
+  cost?: number
+  tokens?: {
+    input?: number
+    output?: number
+    cacheRead?: number
+    cacheWrite?: number
+    total?: number
+  }
+  contextUsage?: PiContextUsage | null
+}
+
 type SpawnParams = {
   cwd: string
   env?: NodeJS.ProcessEnv
@@ -134,14 +162,10 @@ export class PiRpcProcess {
 
       if (msg?.type === 'response') {
         const id = typeof msg.id === 'string' ? msg.id : undefined
-        if (id) {
-          const pending = this.pending.get(id)
-          if (pending) {
-            this.pending.delete(id)
-            pending.resolve(msg as PiRpcResponse)
-            return
-          }
-        }
+        // `resolve` removes the pending entry. Responses for unknown or already timed-out
+        // ids are dropped: a response is never a pi event, so it must not be broadcast.
+        if (id !== undefined) this.pending.get(id)?.resolve(msg as PiRpcResponse)
+        return
       }
 
       for (const h of this.eventHandlers) h(msg as PiRpcEvent)
@@ -200,12 +224,13 @@ export class PiRpcProcess {
     if (params.sessionPath) args.push('--session', params.sessionPath)
     if (params.appendSystemPrompt) args.push(...appendSystemPromptArgs(params.appendSystemPrompt, params.cwd, env))
 
-    const child = spawn(cmd, args, {
+    // Windows cmd launchers need shell escaping; direct executables use native argv.
+    const start = shouldUseShellForPiCommand(cmd) ? crossSpawn : spawn
+    const child = start(cmd, args, {
       cwd: params.cwd,
       stdio: 'pipe',
-      env,
-      shell: shouldUseShellForPiCommand(cmd)
-    })
+      env
+    }) as ChildProcessWithoutNullStreams
 
     // Ensure spawn failures (e.g. ENOENT when pi isn't installed) are surfaced as a
     // deterministic error instead of later EPIPE/internal-error noise.
@@ -320,7 +345,7 @@ export class PiRpcProcess {
   }
 
   async getState(timeoutMs?: number): Promise<unknown> {
-    const res = await this.request({ type: 'get_state' }, timeoutMs)
+    const res = await this.request({ type: 'get_state' }, { timeoutMs })
     if (!res.success) throw new Error(`pi get_state failed: ${res.error ?? JSON.stringify(res.data)}`)
     return res.data
   }
@@ -384,10 +409,10 @@ export class PiRpcProcess {
     if (!res.success) throw new Error(`pi set_auto_compaction failed: ${res.error ?? JSON.stringify(res.data)}`)
   }
 
-  async getSessionStats(): Promise<unknown> {
-    const res = await this.request({ type: 'get_session_stats' }, 5000)
+  async getSessionStats(timeoutMs = 5000): Promise<PiSessionStats> {
+    const res = await this.request({ type: 'get_session_stats' }, { timeoutMs })
     if (!res.success) throw new Error(`pi get_session_stats failed: ${res.error ?? JSON.stringify(res.data)}`)
-    return res.data
+    return (res.data ?? {}) as PiSessionStats
   }
 
   async setSessionName(name: string): Promise<void> {
@@ -423,28 +448,51 @@ export class PiRpcProcess {
     await this.writeLine(`${JSON.stringify({ type: 'extension_ui_response', ...response })}\n`)
   }
 
-  private request(cmd: PiRpcCommand, timeoutMs?: number): Promise<PiRpcResponse> {
+  private request(cmd: PiRpcCommand, opts?: { timeoutMs?: number }): Promise<PiRpcResponse> {
     const id = crypto.randomUUID()
     const withId = { ...cmd, id }
+    const timeoutMs = opts?.timeoutMs
 
     const line = `${JSON.stringify(withId)}\n`
 
-    let timer: ReturnType<typeof setTimeout> | undefined
     return new Promise<PiRpcResponse>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject })
+      let timer: ReturnType<typeof setTimeout> | undefined
+
+      // Returns false when the id was already dropped (e.g. by the timeout), so the
+      // caller can avoid settling the promise twice.
+      const drop = (): boolean => {
+        if (timer !== undefined) {
+          clearTimeout(timer)
+          timer = undefined
+        }
+        return this.pending.delete(id)
+      }
+
+      this.pending.set(id, {
+        resolve: res => {
+          drop()
+          resolve(res)
+        },
+        reject: error => {
+          drop()
+          reject(error)
+        }
+      })
+
       if (timeoutMs !== undefined) {
         timer = setTimeout(() => {
-          this.pending.delete(id)
-          reject(new Error(`pi ${cmd.type} timed out`))
+          timer = undefined
+          if (!this.pending.delete(id)) return
+          reject(new Error(`pi ${cmd.type} timed out after ${timeoutMs}ms`))
         }, timeoutMs)
+        // Never let an auxiliary request keep the event loop alive.
+        timer.unref?.()
       }
 
       void this.writeLine(line).catch(error => {
-        this.pending.delete(id)
+        if (!drop()) return
         reject(error)
       })
-    }).finally(() => {
-      clearTimeout(timer)
     })
   }
 

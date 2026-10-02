@@ -37,7 +37,14 @@ export function streamedUsageUpdate(event: unknown, size: number | undefined): U
 export function sessionStatsUsageUpdate(stats: unknown): UsageUpdate | undefined {
   const data = record(stats)
   const context = record(data?.contextUsage)
-  if (!tokens(context?.tokens) || !tokens(context?.contextWindow) || context.contextWindow === 0) return undefined
+  if (
+    !tokens(context?.tokens) ||
+    !tokens(context?.contextWindow) ||
+    !Number.isSafeInteger(context.tokens) ||
+    !Number.isSafeInteger(context.contextWindow) ||
+    context.contextWindow === 0
+  )
+    return undefined
   return { used: context.tokens, size: context.contextWindow, ...cost(data?.cost) }
 }
 

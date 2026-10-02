@@ -127,6 +127,9 @@ test('PiAcpAgent: setSessionConfigOption maps model changes to pi and emits mode
     },
     async refreshContextWindow() {
       contextRefreshes++
+    },
+    async publishContextUsage() {
+      // Context usage publishing is covered in test/unit/context-usage.test.ts.
     }
   }
 

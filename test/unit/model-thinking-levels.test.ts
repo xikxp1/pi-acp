@@ -308,7 +308,8 @@ for (const path of ['legacy model', 'model config'] as const) {
           'get_state',
           'get_state',
           'get_available_models',
-          'get_available_thinking_levels'
+          'get_available_thinking_levels',
+          'get_session_stats'
         ]
       )
       if (path === 'model config') assert.deepEqual(result, { configOptions: options })

@@ -11,7 +11,13 @@ import type {
 import { RequestError } from '@agentclientprotocol/sdk'
 import { readFileSync } from 'node:fs'
 import { isAbsolute, resolve as resolvePath } from 'node:path'
-import { PiRpcProcess, PiRpcPromptBusyError, PiRpcSpawnError, type PiRpcEvent } from '../pi-rpc/process.js'
+import {
+  PiRpcProcess,
+  PiRpcPromptBusyError,
+  PiRpcSpawnError,
+  SESSION_STATS_TIMEOUT_MS,
+  type PiRpcEvent
+} from '../pi-rpc/process.js'
 import { maybeAuthRequiredError } from './auth-required.js'
 import { SessionStore } from './session-store.js'
 import { titleFromContent } from './session-title.js'
@@ -680,6 +686,25 @@ export class PiAcpSession {
       await pending
       if (pending === this.lastEmit && !this.deltaBuffer) return
     }
+  }
+
+  /**
+   * Best-effort: publish the real pi context-window occupancy as ACP `usage_update`.
+   * Queued updates are flushed even when the stats query fails or times out, so callers
+   * can await this before resolving `session/prompt`.
+   */
+  async publishContextUsage(): Promise<void> {
+    try {
+      // Older/stubbed pi processes may not expose the stats RPC at all.
+      if (typeof this.proc.getSessionStats === 'function') {
+        const update = sessionStatsUsageUpdate(await this.proc.getSessionStats(SESSION_STATS_TIMEOUT_MS))
+        if (update) this.emit({ sessionUpdate: 'usage_update', ...update })
+      }
+    } catch {
+      // Context usage is auxiliary; never fail or delay the turn because of it.
+    }
+
+    await this.flushEmits()
   }
 
   private emitBashToolCall(params: {
