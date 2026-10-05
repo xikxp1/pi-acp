@@ -1445,7 +1445,11 @@ export class PiAcpSession {
     if (method === 'notify') {
       this.emit({
         sessionUpdate: 'agent_message_chunk',
-        content: { type: 'text', text: stringProp(ev, 'message') ?? 'Pi notification' } satisfies ContentBlock,
+        // Notifications can arrive mid-stream; pad them so Zed renders a separate Markdown block.
+        content: {
+          type: 'text',
+          text: `\n\n${stringProp(ev, 'message') ?? 'Pi notification'}\n\n`
+        } satisfies ContentBlock,
         _meta: { piAcp: { notify: { level: stringProp(ev, 'notifyType') ?? 'info' } } }
       })
       await this.proc.sendExtensionUiResponse({ id, cancelled: true })

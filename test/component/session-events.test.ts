@@ -1124,7 +1124,7 @@ test('PiAcpSession: tags extension notify chunks with severity in _meta', async 
   assert.equal(conn.updates.length, 1)
   assert.deepEqual(conn.updates[0]!.update, {
     sessionUpdate: 'agent_message_chunk',
-    content: { type: 'text', text: 'MCP: connection failed' },
+    content: { type: 'text', text: '\n\nMCP: connection failed\n\n' },
     _meta: { piAcp: { notify: { level: 'error' } } }
   })
   assert.deepEqual(proc.extensionUiResponses[0], { id: 'n1', cancelled: true })
