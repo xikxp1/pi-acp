@@ -23,6 +23,8 @@ import { SessionStore } from './session-store.js'
 import { titleFromContent } from './session-title.js'
 import type { SubagentSessions } from './subagent-sessions.js'
 import { ClientBridge, clientBridgeEnv, type ClientCapabilities } from './client-bridge.js'
+import { ClientLink, toClientLink, type SessionClient } from './client-link.js'
+import { LiveTurn, committedMessages } from './live-turn.js'
 import { expandSlashCommand, type FileSlashCommand } from './slash-commands.js'
 import {
   bashCommand,
@@ -52,7 +54,7 @@ type SessionCreateParams = {
   cwd: string
   mcpServers: McpServer[]
   additionalDirectories?: string[]
-  conn: AgentSideConnection
+  conn: SessionClient | ClientLink
   fileCommands?: import('./slash-commands.js').FileSlashCommand[]
   piCommand?: string
   clientCapabilities?: ClientCapabilities
@@ -165,6 +167,10 @@ export class SessionManager {
     for (const [id] of this.sessions) this.close(id)
   }
 
+  list(): PiAcpSession[] {
+    return [...this.sessions.values()]
+  }
+
   /** Get a registered session if it exists (no throw). */
   maybeGet(sessionId: string): PiAcpSession | undefined {
     return this.sessions.get(sessionId)
@@ -198,7 +204,8 @@ export class SessionManager {
     // so sessions are visible to the regular `pi` CLI.
     let sessionId = ''
     const ref: { session?: PiAcpSession } = {}
-    const bridge = await ClientBridge.create(params.conn, () => sessionId, params.clientCapabilities, {
+    const link = toClientLink(params.conn)
+    const bridge = await ClientBridge.create(link, () => sessionId, params.clientCapabilities, {
       onTerminalCreated: (toolCallId, terminalId) => ref.session?.attachClientTerminal(toolCallId, terminalId)
     })
     let proc: PiRpcProcess
@@ -246,7 +253,7 @@ export class SessionManager {
       mcpServers: params.mcpServers,
       additionalDirectories: params.additionalDirectories,
       proc,
-      conn: params.conn,
+      conn: link,
       fileCommands: params.fileCommands ?? [],
       clientSupportsFormElicitation: params.clientSupportsFormElicitation,
       subagentSessions: params.subagentSessions,
@@ -322,7 +329,10 @@ export class PiAcpSession {
   private nameEventVersion = 0
 
   readonly proc: PiRpcProcess
-  private readonly conn: AgentSideConnection
+  /** The ACP client currently viewing this session (swappable in daemon mode). */
+  readonly link: ClientLink
+  // Uncommitted output of the running turn, replayed to clients that attach mid-turn.
+  private readonly live = new LiveTurn()
   private readonly fileCommands: FileSlashCommand[]
   private extensionCommandNames = new Set<string>()
   private readonly clientSupportsFormElicitation: boolean
@@ -385,7 +395,7 @@ export class PiAcpSession {
     mcpServers: McpServer[]
     additionalDirectories?: string[]
     proc: PiRpcProcess
-    conn: AgentSideConnection
+    conn: SessionClient | ClientLink
     fileCommands?: FileSlashCommand[]
     clientSupportsFormElicitation?: boolean
     subagentSessions?: SubagentSessions
@@ -396,7 +406,7 @@ export class PiAcpSession {
     this.mcpServers = opts.mcpServers
     this.additionalDirectories = opts.additionalDirectories ?? []
     this.proc = opts.proc
-    this.conn = opts.conn
+    this.link = toClientLink(opts.conn)
     this.fileCommands = opts.fileCommands ?? []
     this.clientSupportsFormElicitation = opts.clientSupportsFormElicitation ?? false
     this.title = opts.title?.trim() || undefined
@@ -412,7 +422,73 @@ export class PiAcpSession {
     if (this.disposed) return
     this.disposed = true
     this.handleFailure(new Error('pi session disposed'))
+    this.link.close()
     this.proc.dispose?.()
+  }
+
+  /**
+   * Send the persisted transcript plus the uncommitted live tail to `client` and make it
+   * the session's client. History, tail, and later output are ordered consistently: the
+   * snapshot is taken synchronously when pi answers `get_messages`, before any later pi
+   * event is processed, and is queued ahead of all output generated after it.
+   */
+  async replayTranscript(
+    client: SessionClient,
+    renderHistory: (messages: unknown) => SessionUpdate[],
+    opts: { includeState?: boolean; ordered?: boolean } = {}
+  ): Promise<void> {
+    if (!opts.ordered) {
+      // A freshly spawned process has no live tail: replay history directly, letting
+      // concurrent live updates (e.g. subagent cards) interleave as before.
+      this.link.attach(client)
+      const data = await this.proc.getMessages()
+      for (const update of renderHistory(data)) await client.sessionUpdate({ sessionId: this.sessionId, update })
+      return
+    }
+    let delivered: Promise<void> | undefined
+    const handoff = (data: unknown) => {
+      if (delivered) return
+      this.flushDeltaBuffer()
+      const updates = [
+        ...renderHistory(data),
+        ...this.live.snapshot(committedMessages(data)),
+        ...(opts.includeState ? this.stateUpdates() : [])
+      ]
+      let failure: { error: unknown } | undefined
+      let chain = this.lastEmit
+      for (const update of updates) {
+        chain = chain.then(() =>
+          failure
+            ? undefined
+            : client.sessionUpdate({ sessionId: this.sessionId, update }).catch((error: unknown) => {
+                failure = { error }
+              })
+        )
+      }
+      this.lastEmit = chain
+      delivered = chain.then(() => {
+        if (failure) throw failure.error
+      })
+      this.link.attach(client, delivered)
+    }
+    const data = await this.proc.getMessages({ onResponse: handoff })
+    handoff(data)
+    await delivered
+  }
+
+  /** Point the session at `client` without replaying history (session/resume). */
+  async attachClient(client: SessionClient): Promise<void> {
+    this.flushDeltaBuffer()
+    this.link.attach(client)
+    for (const update of this.stateUpdates()) this.emitImmediate(update)
+    await this.flushEmits()
+  }
+
+  private stateUpdates(): SessionUpdate[] {
+    const updates: SessionUpdate[] = []
+    if (this.title && !this.terminalError) updates.push({ sessionUpdate: 'session_info_update', title: this.title })
+    updates.push({ sessionUpdate: 'session_info_update', _meta: { piAcp: this.activity() } })
+    return updates
   }
 
   private failTurns(error: unknown): void {
@@ -451,6 +527,7 @@ export class PiAcpSession {
     this.subagentSessions?.failParent(this.sessionId)
     for (const update of this.subagentCards.fail()) this.emit(update)
     this.subagentToolCalls.clear()
+    this.live.clear()
     void this.flushEmits().then(() => this.failTurns(error))
     this.currentToolCalls.clear()
     this.fileSnapshots.clear()
@@ -615,13 +692,17 @@ export class PiAcpSession {
   }
 
   private emitImmediate(update: SessionUpdate): void {
+    // The recipient is fixed when the update is generated, not when it is delivered, so
+    // output that predates a client handoff never follows the new client's replay.
+    const target = this.link.outputTarget()
     // Serialize update delivery.
     this.emitQueueDepth++
     this.lastEmit = this.lastEmit
       .then(async () => {
+        if (!target) return
         const startedAt = performance.now()
         try {
-          await this.conn.sessionUpdate({ sessionId: this.sessionId, update })
+          await this.link.deliver(target, { sessionId: this.sessionId, update })
         } finally {
           const elapsed = performance.now() - startedAt
           this.deliveryLatencyMs = this.deliveryLatencyMs ? this.deliveryLatencyMs * 0.75 + elapsed * 0.25 : elapsed
@@ -657,6 +738,7 @@ export class PiAcpSession {
 
   private emitDelta(sessionUpdate: 'agent_message_chunk' | 'agent_thought_chunk', text: string): void {
     if (!text) return
+    this.live.appendDelta(sessionUpdate, text)
     if (this.deltaBuffer && this.deltaBuffer.sessionUpdate !== sessionUpdate) this.flushDeltaBuffer()
     this.deltaBuffer ??= { sessionUpdate, text: '' }
     this.deltaBuffer.text += text
@@ -676,6 +758,7 @@ export class PiAcpSession {
       const link = this.subagentSessions?.link(this.sessionId, update.toolCallId)
       if (link) update = { ...update, _meta: { ...update._meta, ...link } }
     }
+    this.live.record(update)
     this.emitImmediate(update)
   }
 
@@ -797,11 +880,15 @@ export class PiAcpSession {
     return Boolean(this.piBusy || this.pendingTurn || this.turnQueue.length || this.aborting || this.reconciling)
   }
 
-  private publishActivity(): void {
-    const activity = {
+  private activity(): { queueDepth: number; running: boolean } {
+    return {
       queueDepth: this.turnQueue.length,
       running: !this.terminalError && Boolean(this.piBusy || this.pendingTurn || this.aborting || this.reconciling)
     }
+  }
+
+  private publishActivity(): void {
+    const activity = this.activity()
     const key = JSON.stringify(activity)
     if (key === this.lastActivity) return
     this.lastActivity = key
@@ -1012,9 +1099,18 @@ export class PiAcpSession {
     }
 
     if (type === 'message_start' || type === 'message_end') {
-      const message = ev.message as { role?: unknown; content?: unknown } | null | undefined
+      const message = ev.message as
+        | { role?: unknown; content?: unknown; timestamp?: unknown; toolCallId?: unknown }
+        | null
+        | undefined
       if (message?.role === 'user') {
         void this.publishTitle(this.title ?? titleFromContent(message.content))
+      }
+      if (message?.role === 'assistant') {
+        this.live.resetMessage(type === 'message_start' ? message.timestamp : undefined)
+      }
+      if (type === 'message_end' && message?.role === 'toolResult' && typeof message.toolCallId === 'string') {
+        this.live.commitTool(message.toolCallId)
       }
     }
 
@@ -1401,6 +1497,7 @@ export class PiAcpSession {
       case 'agent_settled': {
         const autonomous = !this.pendingTurn && this.agentUnsettled
         this.agentUnsettled = false
+        this.live.clear()
         this.agentVersion++
         this.invalidateSettlement()
         if (this.pendingTurn) this.pendingTurn.settled = true
@@ -1502,7 +1599,7 @@ export class PiAcpSession {
     const prefill = stringProp(ev, 'prefill')
 
     try {
-      const response = await this.conn.unstable_createElicitation({
+      const response = await this.link.unstable_createElicitation({
         mode: 'form',
         sessionId: this.sessionId,
         message: title,
@@ -1553,7 +1650,7 @@ export class PiAcpSession {
     options: PermissionOption[]
   ): Promise<PermissionResponse | null> {
     try {
-      return await this.conn.requestPermission({
+      return await this.link.requestPermission({
         sessionId: this.sessionId,
         toolCall: extensionUiToolCall(id, ev),
         options

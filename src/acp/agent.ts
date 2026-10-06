@@ -27,12 +27,15 @@ import {
   type SetSessionModeResponse,
   type StopReason,
   type DeleteSessionRequest,
-  type DeleteSessionResponse
+  type DeleteSessionResponse,
+  type SessionUpdate
 } from '@agentclientprotocol/sdk'
 import { getAuthMethods } from './auth.js'
 import { PiTurnError, SessionManager, type PiAcpSession } from './session.js'
 import { SessionStore } from './session-store.js'
-import { SubagentSessions, SUBAGENT_CAPABILITY, supportsSubagentSessions } from './subagent-sessions.js'
+import { SUBAGENT_CAPABILITY, supportsSubagentSessions, type SubagentSessions } from './subagent-sessions.js'
+import { AgentRuntime } from './runtime.js'
+import { ClientLink } from './client-link.js'
 import { ClientBridge, clientBridgeEnv, type ClientCapabilities } from './client-bridge.js'
 import { PiRpcProcess } from '../pi-rpc/process.js'
 import { listPiSessions, findPiSession, forkPiSessionFile, readPiSessionTitle } from './pi-sessions.js'
@@ -140,15 +143,39 @@ import { fileURLToPath } from 'node:url'
 
 const pkg = readNearestPackageJson(import.meta.url)
 
+export type PiAcpAgentOptions = {
+  /** Shared state; the daemon passes one runtime to every connection. */
+  runtime?: AgentRuntime
+}
+
 export class PiAcpAgent implements ACPAgent {
   private readonly conn: AgentSideConnection
-  private readonly sessions = new SessionManager()
-  private readonly store = new SessionStore()
-  private readonly restoringSessions = new Map<string, Promise<PiAcpSession>>()
+  private readonly runtime: AgentRuntime
+  private readonly sessions: SessionManager
+  private readonly store: SessionStore
+  private readonly restoringSessions: Map<string, Promise<PiAcpSession>>
   private readonly subagentSessions: SubagentSessions
 
+  /** Stdio mode: the client is gone, so stop every session. */
   dispose(): void {
     this.sessions.disposeAll()
+  }
+
+  /** Daemon mode: the client is gone, but its sessions keep running for the next one. */
+  disconnect(): void {
+    for (const session of this.sessions.list()) session.link.detach(this.conn)
+    this.runtime.subagentClient.detach(this.conn)
+  }
+
+  private get durable(): boolean {
+    return this.runtime.options.durable
+  }
+
+  private newLink(): ClientLink {
+    return new ClientLink(this.conn, {
+      durable: this.durable,
+      detachedInputTimeoutMs: this.runtime.options.detachedInputTimeoutMs
+    })
   }
 
   // Remember recent session cwd and use it as the default filter.
@@ -157,10 +184,14 @@ export class PiAcpAgent implements ACPAgent {
   private clientSupportsFormElicitation = false
   private clientCapabilities: ClientCapabilities = {}
 
-  constructor(conn: AgentSideConnection, _config?: unknown) {
+  constructor(conn: AgentSideConnection, options?: PiAcpAgentOptions) {
     this.conn = conn
-    this.subagentSessions = new SubagentSessions(conn)
-    void _config
+    this.runtime = options?.runtime ?? new AgentRuntime()
+    this.sessions = this.runtime.sessions
+    this.store = this.runtime.store
+    this.restoringSessions = this.runtime.restoringSessions
+    this.subagentSessions = this.runtime.subagentSessions
+    this.runtime.subagentClient.attach(conn)
   }
 
   private cleanupFailedNewSession(sessionId: string, state?: any | null): void {
@@ -225,7 +256,8 @@ export class PiAcpAgent implements ACPAgent {
       const additionalDirectories =
         opts?.additionalDirectories ?? this.store.get(sessionId)?.additionalDirectories ?? []
 
-      const bridge = await ClientBridge.create(this.conn, () => sessionId, this.clientCapabilities, {
+      const link = this.newLink()
+      const bridge = await ClientBridge.create(link, () => sessionId, this.clientCapabilities, {
         onTerminalCreated: (toolCallId, terminalId) =>
           this.sessions.maybeGet(sessionId)?.attachClientTerminal(toolCallId, terminalId)
       })
@@ -255,7 +287,7 @@ export class PiAcpAgent implements ACPAgent {
         cwd,
         mcpServers: opts?.mcpServers ?? [],
         additionalDirectories,
-        conn: this.conn,
+        conn: link,
         proc,
         fileCommands,
         clientSupportsFormElicitation: this.clientSupportsFormElicitation,
@@ -340,7 +372,7 @@ export class PiAcpAgent implements ACPAgent {
       cwd: params.cwd,
       mcpServers: params.mcpServers,
       additionalDirectories: normalizeAdditionalDirectories(params.additionalDirectories, params.cwd),
-      conn: this.conn,
+      conn: this.newLink(),
       fileCommands,
       piCommand: process.env.PI_ACP_PI_COMMAND,
       clientCapabilities: this.clientCapabilities,
@@ -1014,10 +1046,17 @@ export class PiAcpAgent implements ACPAgent {
       throw RequestError.invalidParams(`cwd must be an absolute path: ${params.cwd}`)
     }
 
-    // If the client is re-loading a session that is already active, tear down the existing
-    // pi subprocess so we can start fresh and re-advertise commands reliably.
-    // (Some clients may call session/load when restoring from history.)
-    this.sessions.close(params.sessionId)
+    const additionalDirectories = normalizeAdditionalDirectories(params.additionalDirectories, params.cwd)
+
+    // Stdio mode tears down an already active session so a fresh pi process re-advertises
+    // commands reliably. Daemon mode reattaches instead, keeping a running turn alive; an
+    // idle session still restarts when its roots changed (pi cannot change its system prompt).
+    const active = this.sessions.maybeGet(params.sessionId)
+    const reattach =
+      active !== undefined &&
+      this.durable &&
+      (active.busy || sameDirectories(active.additionalDirectories, additionalDirectories))
+    if (active && !reattach) this.sessions.close(params.sessionId)
 
     this.lastSessionCwd = params.cwd
 
@@ -1027,13 +1066,15 @@ export class PiAcpAgent implements ACPAgent {
     }
 
     const enableSkillCommands = getEnableSkillCommands(params.cwd)
-    const session = await this.restoreSession(params.sessionId, {
-      cwd: params.cwd,
-      mcpServers: params.mcpServers,
-      additionalDirectories: normalizeAdditionalDirectories(params.additionalDirectories, params.cwd)
-    })
-    const proc = session.proc
-    const { configOptions, models, modes } = await this.getRestoredSessionConfiguration(session)
+    const session =
+      reattach && active
+        ? active
+        : await this.restoreSession(params.sessionId, {
+            cwd: params.cwd,
+            mcpServers: params.mcpServers,
+            additionalDirectories
+          })
+    const { configOptions, models, modes } = await this.getRestoredSessionConfiguration(session, !reattach)
     const fileCommands = loadSlashCommands(params.cwd)
 
     // (Optional) ensure mapping stays fresh.
@@ -1043,35 +1084,58 @@ export class PiAcpAgent implements ACPAgent {
       sessionFile: stored.sessionFile
     })
 
-    // Surface the stored session name (or first-message fallback) as the thread title.
-    const piSession = findPiSession(params.sessionId)
-    await session.publishTitle(undefined, { updatedAt: piSession?.updatedAt ?? new Date().toISOString() })
+    const render = (data: unknown) => this.historyUpdates(session.sessionId, params.cwd, stored.sessionFile, data)
+    if (reattach) {
+      // Replays history, the running turn's live tail, title, and activity to this client.
+      await session.replayTranscript(this.conn, render, { includeState: true, ordered: true })
+    } else {
+      // Surface the stored session name (or first-message fallback) as the thread title.
+      const piSession = findPiSession(params.sessionId)
+      await session.publishTitle(undefined, { updatedAt: piSession?.updatedAt ?? new Date().toISOString() })
+      await session.replayTranscript(this.conn, render)
+    }
 
-    // Replay full conversation history.
-    const data = (await proc.getMessages()) as any
-    const messages = Array.isArray(data?.messages) ? data.messages : []
+    const response = {
+      configOptions,
+      models,
+      modes,
+      _meta: {
+        piAcp: {
+          startupInfo: null,
+          ...(reattach ? { reattached: true } : {})
+        }
+      }
+    }
+
+    this.deferAvailableCommands(session, enableSkillCommands, fileCommands)
+
+    return response
+  }
+
+  /** Render pi's committed messages as ACP updates (pure: no delivery). */
+  private historyUpdates(sessionId: string, cwd: string, sessionFile: string, data: unknown): SessionUpdate[] {
+    const raw = (data as { messages?: unknown } | null | undefined)?.messages
+    const messages: any[] = Array.isArray(raw) ? raw : []
+    const updates: SessionUpdate[] = []
 
     // Assistant messages carry tool-call arguments; remember them so historic
     // tool results can be titled like live ones.
     const toolCallArgs = new Map<string, unknown>()
-    const historicalSubagents = this.subagentSessions.restoreHistory(session.sessionId, params.cwd, stored.sessionFile)
+    const historicalSubagents = this.subagentSessions.restoreHistory(sessionId, cwd, sessionFile)
     const replayedSubagents = new Set<string>()
-    const replaySubagent = async (block: { id: string; name: string; arguments: unknown }) => {
-      const link = this.subagentSessions.link(session.sessionId, block.id)
+    const replaySubagent = (block: { id: string; name: string; arguments: unknown }) => {
+      const link = this.subagentSessions.link(sessionId, block.id)
       if (!link || replayedSubagents.has(block.id)) return
       replayedSubagents.add(block.id)
       toolCallArgs.set(block.id, block.arguments)
-      await this.conn.sessionUpdate({
-        sessionId: session.sessionId,
-        update: {
-          sessionUpdate: 'tool_call',
-          toolCallId: block.id,
-          title: toToolTitle(block.name, block.arguments, params.cwd),
-          kind: toToolKind(block.name),
-          status: this.subagentSessions.toolStatus(session.sessionId, block.id) ?? 'failed',
-          rawInput: block.arguments,
-          _meta: link
-        }
+      updates.push({
+        sessionUpdate: 'tool_call',
+        toolCallId: block.id,
+        title: toToolTitle(block.name, block.arguments, cwd),
+        kind: toToolKind(block.name),
+        status: this.subagentSessions.toolStatus(sessionId, block.id) ?? 'failed',
+        rawInput: block.arguments,
+        _meta: link
       })
     }
     const projectedCalls = new Set<string>()
@@ -1082,7 +1146,7 @@ export class PiAcpAgent implements ACPAgent {
     }
     // Compaction omits old delegations from get_messages, but not from the
     // selected persisted branch. Replay those links in original branch order.
-    for (const block of historicalSubagents.values()) if (!projectedCalls.has(block.id)) await replaySubagent(block)
+    for (const block of historicalSubagents.values()) if (!projectedCalls.has(block.id)) replaySubagent(block)
 
     for (const m of messages) {
       const role = String(m?.role ?? '')
@@ -1095,56 +1159,26 @@ export class PiAcpAgent implements ACPAgent {
 
       const customText = displayedCustomMessageText(m)
       if (customText) {
-        await this.conn.sessionUpdate({
-          sessionId: session.sessionId,
-          update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: customText } }
-        })
+        updates.push({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: customText } })
       }
 
       if (role === 'user') {
         const text = normalizePiMessageText(m?.content)
-        if (text) {
-          await this.conn.sessionUpdate({
-            sessionId: session.sessionId,
-            update: {
-              sessionUpdate: 'user_message_chunk',
-              content: { type: 'text', text }
-            }
-          })
-        }
+        if (text) updates.push({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text } })
         for (const image of piImageBlocks(m?.content)) {
-          await this.conn.sessionUpdate({
-            sessionId: session.sessionId,
-            update: { sessionUpdate: 'user_message_chunk', content: image }
-          })
+          updates.push({ sessionUpdate: 'user_message_chunk', content: image })
         }
       }
 
       if (role === 'assistant') {
         const thinking = normalizePiAssistantThinking(m?.content)
-        if (thinking) {
-          await this.conn.sessionUpdate({
-            sessionId: session.sessionId,
-            update: {
-              sessionUpdate: 'agent_thought_chunk',
-              content: { type: 'text', text: thinking }
-            }
-          })
-        }
+        if (thinking) updates.push({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: thinking } })
         const text = normalizePiAssistantText(m?.content)
-        if (text) {
-          await this.conn.sessionUpdate({
-            sessionId: session.sessionId,
-            update: {
-              sessionUpdate: 'agent_message_chunk',
-              content: { type: 'text', text }
-            }
-          })
-        }
+        if (text) updates.push({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } })
         for (const block of Array.isArray(m.content) ? m.content : []) {
           if (block?.type !== 'toolCall' || typeof block.id !== 'string') continue
           const original = historicalSubagents.get(block.id)
-          if (original) await replaySubagent(original)
+          if (original) replaySubagent(original)
         }
       }
 
@@ -1152,33 +1186,25 @@ export class PiAcpAgent implements ACPAgent {
         const toolName = String((m as any)?.toolName ?? 'tool')
         const toolCallId = String((m as any)?.toolCallId ?? crypto.randomUUID())
         const isError = Boolean((m as any)?.isError)
-        const isBash = isBashTool(toolName)
 
-        if (isBash) {
+        if (isBashTool(toolName)) {
           const text = bashResultText(m)
-          await this.conn.sessionUpdate({
-            sessionId: session.sessionId,
-            update: {
-              sessionUpdate: 'tool_call',
-              toolCallId,
-              title: bashCommand(m) ?? toolName,
-              kind: 'execute',
-              status: 'completed',
-              content: bashTerminalContent(toolCallId),
-              _meta: bashTerminalInfoMeta(toolCallId, params.cwd)
-            }
+          updates.push({
+            sessionUpdate: 'tool_call',
+            toolCallId,
+            title: bashCommand(m) ?? toolName,
+            kind: 'execute',
+            status: 'completed',
+            content: bashTerminalContent(toolCallId),
+            _meta: bashTerminalInfoMeta(toolCallId, cwd)
           })
-
-          await this.conn.sessionUpdate({
-            sessionId: session.sessionId,
-            update: {
-              sessionUpdate: 'tool_call_update',
-              toolCallId,
-              status: isError ? 'failed' : 'completed',
-              _meta: {
-                ...(text ? bashTerminalOutputMeta(toolCallId, text) : {}),
-                ...bashTerminalExitMeta(toolCallId, bashExitCode(m, isError))
-              }
+          updates.push({
+            sessionUpdate: 'tool_call_update',
+            toolCallId,
+            status: isError ? 'failed' : 'completed',
+            _meta: {
+              ...(text ? bashTerminalOutputMeta(toolCallId, text) : {}),
+              ...bashTerminalExitMeta(toolCallId, bashExitCode(m, isError))
             }
           })
           continue
@@ -1186,57 +1212,37 @@ export class PiAcpAgent implements ACPAgent {
 
         // Create a synthetic ACP tool call to render historic tool usage.
         const args = toolCallArgs.get(toolCallId)
-        const locations = toToolCallLocations(args, params.cwd)
+        const locations = toToolCallLocations(args, cwd)
         if (!replayedSubagents.has(toolCallId))
-          await this.conn.sessionUpdate({
-            sessionId: session.sessionId,
-            update: {
-              sessionUpdate: 'tool_call',
-              toolCallId,
-              _meta: this.subagentSessions.link(session.sessionId, toolCallId),
-              title: toToolTitle(toolName, args ?? m?.details, params.cwd),
-              kind: toToolKind(toolName),
-              status: 'completed',
-              locations,
-              rawInput: args ?? null,
-              rawOutput: m
-            }
+          updates.push({
+            sessionUpdate: 'tool_call',
+            toolCallId,
+            _meta: this.subagentSessions.link(sessionId, toolCallId),
+            title: toToolTitle(toolName, args ?? m?.details, cwd),
+            kind: toToolKind(toolName),
+            status: 'completed',
+            locations,
+            rawInput: args ?? null,
+            rawOutput: m
           })
 
         const diff = isError ? undefined : historicDiffContent(toolName, args)
         const text = toolResultToText(m)
         const title = toToolResultTitle(toolName, m)
-        await this.conn.sessionUpdate({
-          sessionId: session.sessionId,
-          update: {
-            sessionUpdate: 'tool_call_update',
-            toolCallId,
-            ...(title ? { title } : {}),
-            _meta: this.subagentSessions.link(session.sessionId, toolCallId),
-            status: isError ? 'failed' : 'completed',
-            content: diff ?? (text ? [{ type: 'content', content: { type: 'text', text } }] : null),
-            ...(diff ? {} : { rawOutput: m })
-          }
+        updates.push({
+          sessionUpdate: 'tool_call_update',
+          toolCallId,
+          ...(title ? { title } : {}),
+          _meta: this.subagentSessions.link(sessionId, toolCallId),
+          status: isError ? 'failed' : 'completed',
+          content: diff ?? (text ? [{ type: 'content', content: { type: 'text', text } }] : null),
+          ...(diff ? {} : { rawOutput: m })
         })
       }
     }
 
-    const response = {
-      configOptions,
-      models,
-      modes,
-      _meta: {
-        piAcp: {
-          startupInfo: null
-        }
-      }
-    }
-
-    this.deferAvailableCommands(session, enableSkillCommands, fileCommands)
-
-    return response
+    return updates
   }
-
   private async reloadSession(session: PiAcpSession): Promise<string> {
     if (session.busy) return 'Cannot reload while the agent is running. Cancel or wait for it to finish first.'
 
@@ -1324,8 +1330,13 @@ export class PiAcpAgent implements ACPAgent {
     const additionalDirectories = normalizeAdditionalDirectories(params.additionalDirectories, params.cwd)
 
     // A running pi cannot change its system prompt; restart it if the roots differ.
+    // Daemon mode never kills a running turn for that: it reattaches with the old roots.
     const active = this.sessions.maybeGet(params.sessionId)
-    if (active && !sameDirectories(active.additionalDirectories, additionalDirectories)) {
+    if (
+      active &&
+      !sameDirectories(active.additionalDirectories, additionalDirectories) &&
+      !(this.durable && active.busy)
+    ) {
       this.sessions.close(params.sessionId)
     }
 
@@ -1341,10 +1352,11 @@ export class PiAcpAgent implements ACPAgent {
       sessionId: params.sessionId,
       cwd: params.cwd,
       sessionFile: stored.sessionFile,
-      additionalDirectories
+      additionalDirectories: session.additionalDirectories
     })
 
     const { configOptions, models, modes } = await this.getRestoredSessionConfiguration(session, session !== active)
+    if (this.durable && session === active) await session.attachClient(this.conn)
     const piSession = findPiSession(params.sessionId)
     await session.publishTitle(undefined, {
       updatedAt: piSession?.updatedAt ?? new Date().toISOString(),
@@ -1410,6 +1422,12 @@ export class PiAcpAgent implements ACPAgent {
       return {}
     }
     const session = this.sessions.maybeGet(params.sessionId)
+    // Daemon mode: Zed closes sessions whenever a thread view is released, so a running
+    // turn keeps going detached (the daemon reaps it once idle); idle sessions are freed.
+    if (session && this.durable && session.busy) {
+      session.link.detach(this.conn)
+      return {}
+    }
     if (session) {
       try {
         await session.cancel()

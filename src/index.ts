@@ -21,6 +21,13 @@ if (process.argv.includes('--terminal-login')) {
   process.exit(typeof res.status === 'number' ? res.status : 1)
 }
 
+const subcommand = process.argv[2]
+
+if (subcommand === 'daemon' || subcommand === 'attach') {
+  const { runCli } = await import('./daemon/cli.js')
+  process.exit(await runCli(process.argv.slice(2)))
+}
+
 const input = new WritableStream<Uint8Array>({
   write(chunk) {
     return new Promise<void>(resolve => {

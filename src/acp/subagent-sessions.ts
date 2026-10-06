@@ -1,4 +1,5 @@
-import { RequestError, type AgentSideConnection, type SessionUpdate } from '@agentclientprotocol/sdk'
+import { RequestError, type SessionUpdate } from '@agentclientprotocol/sdk'
+import type { UpdateSink } from './client-link.js'
 import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from 'node:fs'
 import { dirname, isAbsolute, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -108,7 +109,7 @@ class ChildSession {
 
   constructor(
     readonly stored: StoredChild,
-    private readonly conn: AgentSideConnection,
+    private readonly conn: UpdateSink,
     cancelFile?: string
   ) {
     this.live = cancelFile !== undefined
@@ -276,7 +277,7 @@ export class SubagentSessions {
   enabled = false
   private readonly children = new Map<string, ChildSession>()
   constructor(
-    private readonly conn: AgentSideConnection,
+    private readonly conn: UpdateSink,
     private readonly directory = join(getPiAcpDir(), 'children')
   ) {}
   isChildId(id: string): boolean {

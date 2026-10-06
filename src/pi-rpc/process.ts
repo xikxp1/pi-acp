@@ -432,8 +432,16 @@ export class PiRpcProcess {
     if (!res.success) throw new Error(`pi switch_session failed: ${res.error ?? JSON.stringify(res.data)}`)
   }
 
-  async getMessages(): Promise<unknown> {
-    const res = await this.request({ type: 'get_messages' })
+  /**
+   * `onResponse` runs synchronously when the response is read, before any later pi event
+   * is dispatched, so callers can snapshot state consistent with the returned messages.
+   */
+  async getMessages(opts?: { onResponse?: (data: unknown) => void }): Promise<unknown> {
+    const onResponse = opts?.onResponse
+    const res = await this.request(
+      { type: 'get_messages' },
+      { onResponse: onResponse && (response => (response.success ? onResponse(response.data) : undefined)) }
+    )
     if (!res.success) throw new Error(`pi get_messages failed: ${res.error ?? JSON.stringify(res.data)}`)
     return res.data
   }
@@ -448,7 +456,10 @@ export class PiRpcProcess {
     await this.writeLine(`${JSON.stringify({ type: 'extension_ui_response', ...response })}\n`)
   }
 
-  private request(cmd: PiRpcCommand, opts?: { timeoutMs?: number }): Promise<PiRpcResponse> {
+  private request(
+    cmd: PiRpcCommand,
+    opts?: { timeoutMs?: number; onResponse?: (response: PiRpcResponse) => void }
+  ): Promise<PiRpcResponse> {
     const id = crypto.randomUUID()
     const withId = { ...cmd, id }
     const timeoutMs = opts?.timeoutMs
@@ -471,6 +482,12 @@ export class PiRpcProcess {
       this.pending.set(id, {
         resolve: res => {
           drop()
+          try {
+            opts?.onResponse?.(res)
+          } catch (error) {
+            reject(error)
+            return
+          }
           resolve(res)
         },
         reject: error => {

@@ -130,6 +130,44 @@ Point your ACP client to the built `dist/index.js`:
   }
 ```
 
+### Daemon mode (remote hosts)
+
+By default the adapter lives and dies with the client connection: when Zed disconnects (laptop sleeps, Wi-Fi drops, ssh dies), every pi process is stopped and running turns are lost. On a remote host, start the adapter with `attach` instead:
+
+```json
+  "agent_servers": {
+    "pi": {
+      "type": "custom",
+      "command": "pi-acp",
+      "args": ["attach"],
+      "env": {}
+    }
+  }
+```
+
+`pi-acp attach` is a thin stdio relay to a long-lived per-user daemon (`pi-acp daemon`), which it starts automatically in its own session (`setsid`) so ssh hangups do not reach it. The daemon owns the pi processes:
+
+- **Disconnect:** sessions keep running. Output produced while no client is attached is not delivered live; it is replayed on reattach.
+- **Reattach:** reopening the thread (`session/load`) binds to the live pi process instead of restarting it, replays the persisted history plus the running turn's uncommitted tail (streamed text, in-flight tool calls, emulated terminal output), then streams live output.
+- **Permissions / `ask_user` while detached:** the request waits for the next client (default up to 24 h, then cancelled). If the client disconnects mid-question, it is re-asked after reattach.
+- **`pi-acp-fs` / `pi-acp-terminal` while detached:** delegation fails fast and pi falls back to local disk / local execution. Client terminals started by the previous connection cannot be shown by the new one.
+- **Closing a thread** (`session/close`) frees an idle session but leaves a running turn going. Detached idle sessions are stopped after 2 h; the daemon exits after 10 min with no sessions and no clients.
+- **Upgrades:** a newer `attach` restarts an idle older daemon; a busy one keeps serving and exits once its turns finish.
+- **Limitations:** after reattach Zed does not show its busy indicator for a turn it did not start (the adapter still publishes `_meta.piAcp.running`), and Zed's stop button cannot cancel it. Prompts sent while it runs are queued until it finishes, as usual.
+
+Manage the daemon with `pi-acp daemon status` (JSON list of sessions) and `pi-acp daemon stop`. Logs go to `~/.pi/pi-acp/daemon/daemon.log`.
+
+On systemd hosts with `KillUserProcesses=yes`, logind kills all user processes at logout. Run `loginctl enable-linger $USER` (or run `pi-acp daemon` as a `systemd --user` service) to keep the daemon alive.
+
+Daemon settings (environment, read when the daemon starts):
+
+- `PI_ACP_DAEMON_DIR` – socket/log directory (default `~/.pi/pi-acp/daemon`, mode `0700`)
+- `PI_ACP_DAEMON_SESSION_IDLE_SECONDS` – stop detached idle sessions after this long (default `7200`)
+- `PI_ACP_DAEMON_EXIT_IDLE_SECONDS` – exit with no sessions/clients after this long (default `600`)
+- `PI_ACP_DAEMON_INPUT_TIMEOUT_SECONDS` – how long detached permission/input requests wait (default `86400`)
+
+The daemon inherits the environment of the `attach` that started it; restart it (`pi-acp daemon stop`) after changing agent `env` settings.
+
 ### Environment variables
 
 - `PI_ACP_ENABLE_EMBEDDED_CONTEXT=true` advertises ACP `promptCapabilities.embeddedContext` support to the client.
